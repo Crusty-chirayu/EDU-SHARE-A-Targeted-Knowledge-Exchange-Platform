@@ -1,0 +1,289 @@
+From f8de71255846745892a1402cf6d05d08f2883f94 Mon Sep 17 00:00:00 2001
+From: Crusty-chirayu <182366692+Crusty-chirayu@users.noreply.github.com>
+Date: Thu, 13 Aug 2026 11:30:33 +0000
+Subject: [PATCH] ci: add runtime validation for Phase 0
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ .github/workflows/p0-security.yml             | 132 ++++++++++++++++++
+ README.md                                     |   7 +-
+ deploy/github-actions-p0-security.yml.example |  76 ----------
+ tests/static_security_test.py                 |  20 +++
+ 4 files changed, 158 insertions(+), 77 deletions(-)
+ create mode 100644 .github/workflows/p0-security.yml
+ delete mode 100644 deploy/github-actions-p0-security.yml.example
+
+diff --git a/.github/workflows/p0-security.yml b/.github/workflows/p0-security.yml
+new file mode 100644
+index 0000000..c48b504
+--- /dev/null
++++ b/.github/workflows/p0-security.yml
+@@ -0,0 +1,132 @@
++name: P0 runtime validation
++
++on:
++  push:
++    branches:
++      - main
++      - 'arena/**'
++  pull_request:
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++jobs:
++  static-security:
++    name: Static security tests
++    runs-on: ubuntu-latest
++    timeout-minutes: 10
++    steps:
++      - name: Check out repository
++        uses: actions/checkout@v4
++      - name: Run dependency-free static security checks
++        run: python3 -m unittest discover -s tests -p '*_test.py' -v
++
++  php-mariadb-integration:
++    name: PHP 8.2 and MariaDB 10.11
++    runs-on: ubuntu-latest
++    timeout-minutes: 20
++    services:
++      mariadb:
++        image: mariadb:10.11
++        env:
++          MARIADB_ROOT_PASSWORD: root-integration-only
++          MARIADB_DATABASE: edu_share
++          MARIADB_USER: edu_share_app
++          MARIADB_PASSWORD: app-integration-only
++        ports:
++          - 3306:3306
++        options: >-
++          --health-cmd="healthcheck.sh --connect --innodb_initialized"
++          --health-interval=5s
++          --health-timeout=5s
++          --health-retries=20
++    env:
++      APP_ENV: test
++      APP_DEBUG: 'false'
++      TRUST_PROXY: 'false'
++      DB_HOST: 127.0.0.1
++      DB_PORT: 3306
++      DB_DATABASE: edu_share
++      DB_USERNAME: edu_share_app
++      DB_PASSWORD: app-integration-only
++      CI_DB_ROOT_PASSWORD: root-integration-only
++      STORAGE_PATH: /tmp/edu-share-private
++      SESSION_NAME: edushare_test_session
++    steps:
++      - name: Check out repository
++        uses: actions/checkout@v4
++
++      - name: Install PHP runtime
++        uses: shivammathur/setup-php@v2
++        with:
++          php-version: '8.2'
++          extensions: mysqli, fileinfo, mbstring
++          coverage: none
++
++      - name: Verify runtime and database connectivity
++        run: |
++          php --version
++          mysql --version
++          php -r 'foreach (["mysqli", "fileinfo", "mbstring", "json", "session"] as $extension) { if (!extension_loaded($extension)) { fwrite(STDERR, "Missing PHP extension: {$extension}\n"); exit(1); } }'
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse 'SELECT 1')" = 1
++
++      - name: Lint PHP
++        run: find . -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 php -l
++
++      - name: Initialize and validate sanitized database
++        run: |
++          MYSQL_PWD="$CI_DB_ROOT_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u root "$DB_DATABASE" < database/schema.sql
++          MYSQL_PWD="$CI_DB_ROOT_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u root "$DB_DATABASE" < database/seed_demo.sql
++
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT CONCAT((SELECT COUNT(*) FROM universities), ':', (SELECT COUNT(*) FROM departments), ':', (SELECT COUNT(*) FROM courses), ':', (SELECT COUNT(*) FROM subjects), ':', (SELECT COUNT(*) FROM users))" "$DB_DATABASE")" = '1:1:1:2:0'
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$DB_DATABASE' AND ENGINE = 'InnoDB'" "$DB_DATABASE")" = 9
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT COUNT(*) FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = '$DB_DATABASE' AND TABLE_NAME = 'materials' AND DELETE_RULE = 'RESTRICT'" "$DB_DATABASE")" = 5
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = '$DB_DATABASE' AND CONSTRAINT_TYPE = 'CHECK'" "$DB_DATABASE")" = 3
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT COUNT(DISTINCT CONCAT(TABLE_NAME, ':', INDEX_NAME)) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = '$DB_DATABASE' AND INDEX_NAME IN ('users_email_unique', 'materials_storage_key_unique', 'material_favorites_user_material_unique')" "$DB_DATABASE")" = 3
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT COUNT(*) FROM subjects s JOIN courses c ON c.id = s.course_id JOIN departments d ON d.id = s.department_id WHERE c.department_id <> d.id OR s.semester NOT BETWEEN 1 AND 12" "$DB_DATABASE")" = 0
++
++      - name: Run PHP and database integration checks
++        run: php tests/integration.php
++
++      - name: Run HTTP lifecycle and security smoke checks
++        run: bash tests/http_smoke.sh
++
++      - name: Validate conservative legacy migration
++        run: |
++          MYSQL_PWD="$CI_DB_ROOT_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u root -e "CREATE DATABASE edu_share_legacy CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; GRANT ALL ON edu_share_legacy.* TO '$DB_USERNAME'@'%';"
++          MYSQL_PWD="$CI_DB_ROOT_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u root edu_share_legacy < tests/legacy_schema_fixture.sql
++          MYSQL_PWD="$CI_DB_ROOT_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u root edu_share_legacy < database/migrations/001_p0_prepare.sql
++          mkdir -p uploads
++          printf '%%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%%%EOF\n' > uploads/legacy-test.pdf
++          DB_DATABASE=edu_share_legacy STORAGE_PATH=/tmp/edu-share-legacy-private php scripts/migrate_legacy_uploads.php
++          MYSQL_PWD="$CI_DB_ROOT_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u root edu_share_legacy < database/migrations/002_p0_finalize.sql
++
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT IF(CHAR_LENGTH(file_path) = 36 AND LEFT(file_path, 32) REGEXP '^[a-f0-9]{32}$' AND RIGHT(file_path, 4) = '.pdf' AND original_filename = 'legacy-test.pdf' AND mime_type = 'application/pdf' AND file_size > 0 AND checksum_sha256 REGEXP '^[a-f0-9]{64}$', 'ok', 'failed') FROM materials WHERE id = 1" edu_share_legacy)" = ok
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT COUNT(*) FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = 'edu_share_legacy' AND TABLE_NAME = 'materials' AND DELETE_RULE = 'RESTRICT'" edu_share_legacy)" = 5
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT CONCAT(university_id, ':', department_id, ':', course_id, ':', subject_id, ':', semester) FROM materials WHERE id = 1" edu_share_legacy)" = '1:1:1:1:1'
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT COUNT(*) FROM university_favorites WHERE user_id = 1 AND university_id = 1" edu_share_legacy)" = 1
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'edu_share_legacy' AND TABLE_NAME = 'user_favorites'" edu_share_legacy)" = 0
++          test -f uploads/legacy-test.pdf
++          rm -f uploads/legacy-test.pdf
++
++      - name: Verify ambiguous legacy relationships are refused without guessing
++        run: |
++          MYSQL_PWD="$CI_DB_ROOT_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u root -e "CREATE DATABASE edu_share_ambiguous CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; GRANT ALL ON edu_share_ambiguous.* TO '$DB_USERNAME'@'%';"
++          MYSQL_PWD="$CI_DB_ROOT_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u root edu_share_ambiguous < tests/legacy_schema_fixture.sql
++          MYSQL_PWD="$CI_DB_ROOT_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u root edu_share_ambiguous < database/migrations/001_p0_prepare.sql
++          MYSQL_PWD="$CI_DB_ROOT_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u root edu_share_ambiguous -e "INSERT INTO universities (id, name) VALUES (2, 'Ambiguous Synthetic University'); INSERT INTO departments (id, university_id, name) VALUES (2, 2, 'Ambiguous Synthetic Department'); UPDATE materials SET department_id = 2, file_path = 'uploads/legacy-ambiguous.pdf' WHERE id = 1;"
++          mkdir -p uploads
++          printf '%%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%%%EOF\n' > uploads/legacy-ambiguous.pdf
++
++          if migration_output="$(DB_DATABASE=edu_share_ambiguous STORAGE_PATH=/tmp/edu-share-ambiguous-private php scripts/migrate_legacy_uploads.php 2>&1)"; then
++            echo 'The migration unexpectedly accepted an ambiguous academic relationship.' >&2
++            exit 1
++          fi
++          printf '%s\n' "$migration_output"
++          grep -q 'academic IDs do not form a canonical' <<< "$migration_output"
++          grep -q 'File migration summary: 1 migrated, 0 already safe, 0 failed.' <<< "$migration_output"
++          grep -q 'Academic validation summary: 1 material record(s) require review.' <<< "$migration_output"
++          test "$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" -Nse "SELECT CONCAT(university_id, ':', department_id, ':', course_id, ':', subject_id, ':', semester) FROM materials WHERE id = 1" edu_share_ambiguous)" = '1:2:1:1:1'
++          test -f uploads/legacy-ambiguous.pdf
++          rm -f uploads/legacy-ambiguous.pdf
+diff --git a/README.md b/README.md
+index e29813c..b5637ed 100644
+--- a/README.md
++++ b/README.md
+@@ -146,9 +146,14 @@ Dependency-free static/security checks are in `tests/static_security_test.py`:
+ python3 -m unittest discover -s tests -p '*_test.py' -v
+ ```
+ 
+-Runtime integration coverage requires PHP 8.2+ and a disposable MariaDB database initialized from the sanitized schema. A CI-ready GitHub Actions recipe is provided at `deploy/github-actions-p0-security.yml.example`; install it under `.github/workflows/` when repository policy permits. On a configured workstation, run:
++Runtime validation is defined in `.github/workflows/p0-security.yml`. On pushes to `main` or an `arena/**` branch, pull requests, and manual dispatches, it runs the static security suite plus PHP 8.2 lint/integration/HTTP checks against an isolated MariaDB 10.11 service. The workflow initializes the sanitized schema and fixture, verifies important foreign keys/checks/unique indexes, and exercises the staged legacy migration.
++
++The migration job has both positive and negative coverage. Its unambiguous synthetic legacy record must migrate and finalize successfully while retaining the legacy source file. A deliberately inconsistent academic path must make `scripts/migrate_legacy_uploads.php` return a failure, leave the university/department/course/subject/semester IDs unchanged, and remain unfinalized. Real legacy inconsistencies remain operator-dependent: an operator must reconcile each reported ID against a backup and intended taxonomy before running `002_p0_finalize.sql`; neither CI nor the migration guesses the correction.
++
++On a configured workstation with a disposable database initialized from `database/schema.sql` and `database/seed_demo.sql`, run:
+ 
+ ```bash
++python3 -m unittest discover -s tests -p '*_test.py' -v
+ find . -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 php -l
+ php tests/integration.php
+ bash tests/http_smoke.sh
+diff --git a/deploy/github-actions-p0-security.yml.example b/deploy/github-actions-p0-security.yml.example
+deleted file mode 100644
+index 5933dcb..0000000
+--- a/deploy/github-actions-p0-security.yml.example
++++ /dev/null
+@@ -1,76 +0,0 @@
+-name: P0 security and integration
+-
+-on:
+-  push:
+-    branches:
+-      - main
+-      - 'arena/**'
+-  pull_request:
+-
+-permissions:
+-  contents: read
+-
+-jobs:
+-  static-security:
+-    runs-on: ubuntu-latest
+-    steps:
+-      - uses: actions/checkout@v4
+-      - name: Run dependency-free static security checks
+-        run: python3 -m unittest discover -s tests -p '*_test.py' -v
+-
+-  php-mariadb-integration:
+-    runs-on: ubuntu-latest
+-    services:
+-      mariadb:
+-        image: mariadb:10.11
+-        env:
+-          MARIADB_ROOT_PASSWORD: root-integration-only
+-          MARIADB_DATABASE: edu_share
+-          MARIADB_USER: edu_share_app
+-          MARIADB_PASSWORD: app-integration-only
+-        ports:
+-          - 3306:3306
+-        options: >-
+-          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+-          --health-interval=5s
+-          --health-timeout=5s
+-          --health-retries=20
+-    env:
+-      APP_ENV: test
+-      APP_DEBUG: 'false'
+-      DB_HOST: 127.0.0.1
+-      DB_PORT: 3306
+-      DB_DATABASE: edu_share
+-      DB_USERNAME: edu_share_app
+-      DB_PASSWORD: app-integration-only
+-      STORAGE_PATH: ${{ runner.temp }}/edu-share-private
+-      SESSION_NAME: edushare_test_session
+-    steps:
+-      - uses: actions/checkout@v4
+-      - name: Install PHP runtime
+-        uses: shivammathur/setup-php@v2
+-        with:
+-          php-version: '8.2'
+-          extensions: mysqli, fileinfo, mbstring
+-          coverage: none
+-      - name: Lint PHP
+-        run: find . -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 php -l
+-      - name: Initialize sanitized database
+-        run: |
+-          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only edu_share < database/schema.sql
+-          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only edu_share < database/seed_demo.sql
+-      - name: Run PHP and database integration checks
+-        run: php tests/integration.php
+-      - name: Run HTTP lifecycle and security smoke checks
+-        run: bash tests/http_smoke.sh
+-      - name: Validate conservative legacy migration
+-        run: |
+-          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only -e "CREATE DATABASE edu_share_legacy CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; GRANT ALL ON edu_share_legacy.* TO 'edu_share_app'@'%';"
+-          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only edu_share_legacy < tests/legacy_schema_fixture.sql
+-          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only edu_share_legacy < database/migrations/001_p0_prepare.sql
+-          mkdir -p uploads
+-          printf '%%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%%%EOF\n' > uploads/legacy-test.pdf
+-          DB_DATABASE=edu_share_legacy STORAGE_PATH="${{ runner.temp }}/edu-share-legacy-private" php scripts/migrate_legacy_uploads.php
+-          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only edu_share_legacy < database/migrations/002_p0_finalize.sql
+-          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only -Nse "SELECT IF(file_path REGEXP '^[a-f0-9]{32}\\.pdf$', 'ok', 'failed') FROM edu_share_legacy.materials WHERE id = 1" | grep -qx ok
+-          rm -f uploads/legacy-test.pdf
+diff --git a/tests/static_security_test.py b/tests/static_security_test.py
+index 31c8165..737e47b 100644
+--- a/tests/static_security_test.py
++++ b/tests/static_security_test.py
+@@ -197,6 +197,26 @@ class StaticSecurityTests(unittest.TestCase):
+             text = source.read_text(encoding="utf-8")
+             self.assertTrue(text.startswith("<?php\ndeclare(strict_types=1);"), str(source.relative_to(ROOT)))
+ 
++    def test_runtime_workflow_is_active_and_fail_closed(self) -> None:
++        workflow_path = ROOT / ".github/workflows/p0-security.yml"
++        self.assertTrue(workflow_path.is_file())
++        workflow = workflow_path.read_text(encoding="utf-8")
++        self.assertIn("permissions:\n  contents: read", workflow)
++        for marker in (
++            "php-version: '8.2'",
++            "image: mariadb:10.11",
++            "php -l",
++            "php tests/integration.php",
++            "bash tests/http_smoke.sh",
++            "scripts/migrate_legacy_uploads.php",
++            "python3 -m unittest discover",
++            "Academic validation summary: 1 material record(s) require review.",
++        ):
++            self.assertIn(marker, workflow)
++        self.assertNotIn("continue-on-error", workflow)
++        self.assertNotRegex(workflow, r"(?m)\|\|\s*true")
++        self.assertFalse((ROOT / "deploy/github-actions-p0-security.yml.example").exists())
++
+ 
+ if __name__ == "__main__":
+     unittest.main(verbosity=2)
+-- 
+2.39.5
+

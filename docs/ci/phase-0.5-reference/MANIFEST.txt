@@ -1,0 +1,10 @@
+EDU-SHARE Phase 0.5 local reference
+Base remote commit: 8f9db56dc314729e1513dc5aecb918fa89ec1ecd
+Blocked local commit: f8de71255846745892a1402cf6d05d08f2883f94
+Blocked commit message: ci: add runtime validation for Phase 0
+Workflow source path: .github/workflows/p0-security.yml
+Saved workflow path: storage/phase-0.5-reference/p0-security.yml
+Workflow SHA-256: 2488f566d7828813fd046fc0ddcd835ef5beb2704dfa62b3b5e319d63408ec7b
+Complete commit patch: storage/phase-0.5-reference/phase-0.5.patch
+Additional snapshots: README.phase-0.5.md and static_security_test.phase-0.5.py
+Reason not pushed: Arena GitHub App lacks workflows permission.
