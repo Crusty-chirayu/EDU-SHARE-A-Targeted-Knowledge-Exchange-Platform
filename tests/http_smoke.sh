@@ -51,6 +51,8 @@ expect_status 200 "$status" 'canonical landing page renders'
 grep -q 'Share Knowledge, Empower Peers' "$TMP/index.html"
 status="$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/mainhome.php")"
 expect_status 301 "$status" 'legacy landing route redirects permanently'
+status="$(curl -sS -o "$TMP/contributors-anonymous.json" -w '%{http_code}' "$BASE/api/v1/universities/1/contributors")"
+expect_status 401 "$status" 'modular contributor route requires authentication'
 
 # Register and authenticate a contributor.
 curl -sS -c "$TEACHER_JAR" -b "$TEACHER_JAR" "$BASE/register.php" -o "$TMP/register-teacher.html"
@@ -68,6 +70,18 @@ status="$(curl -sS -c "$TEACHER_JAR" -b "$TEACHER_JAR" -o /dev/null -w '%{http_c
     --data-urlencode "_csrf=$csrf" --data-urlencode "email=$TEACHER_EMAIL" \
     --data-urlencode "password=$TEACHER_PASSWORD" "$BASE/login1.php")"
 expect_status 303 "$status" 'teacher login succeeds'
+
+status="$(curl -sS -c "$TEACHER_JAR" -b "$TEACHER_JAR" -o "$TMP/contributors.json" -w '%{http_code}' "$BASE/api/v1/universities/1/contributors")"
+expect_status 200 "$status" 'modular contributor directory route succeeds'
+grep -q '"data"' "$TMP/contributors.json"
+grep -q 'HTTP Synthetic Teacher' "$TMP/contributors.json"
+status="$(curl -sS -c "$TEACHER_JAR" -b "$TEACHER_JAR" -o "$TMP/legacy-contributors.json" -w '%{http_code}' "$BASE/university_teachers.php?university_id=1")"
+expect_status 200 "$status" 'legacy contributor directory remains available'
+grep -q 'HTTP Synthetic Teacher' "$TMP/legacy-contributors.json"
+status="$(curl -sS -c "$TEACHER_JAR" -b "$TEACHER_JAR" -o /dev/null -w '%{http_code}' "$BASE/api/v1/universities/not-a-number/contributors")"
+expect_status 422 "$status" 'modular contributor route rejects malformed IDs'
+status="$(curl -sS -X POST -c "$TEACHER_JAR" -b "$TEACHER_JAR" -o /dev/null -w '%{http_code}' "$BASE/api/v1/universities/1/contributors")"
+expect_status 405 "$status" 'modular contributor route rejects unsupported methods'
 
 # Upload a real, magic-valid PDF through the multipart endpoint.
 printf '%%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%%%EOF\n' > "$TMP/lecture.pdf"

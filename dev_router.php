@@ -7,7 +7,7 @@ $relativePath = ltrim(str_replace('\\', '/', $uriPath), '/');
 if ($relativePath !== '' && (
     str_contains($relativePath, "\0")
     || preg_match('#(^|/)\.#', $relativePath)
-    || preg_match('#^(?:includes|database|scripts|storage|tests|deploy)(?:/|$)#i', $relativePath)
+    || preg_match('#^(?:app|routes|views|includes|database|scripts|storage|tests|deploy)(?:/|$)#i', $relativePath)
     || preg_match('#\.(?:env|ini|log|sql|sh|bak)$#i', $relativePath)
 )) {
     http_response_code(404);
@@ -16,6 +16,12 @@ if ($relativePath !== '' && (
 
 if ($relativePath === '') {
     require __DIR__ . '/index.php';
+    return true;
+}
+
+if (str_starts_with($uriPath, '/api/v1/')) {
+    $_SERVER['PATH_INFO'] = $uriPath;
+    require __DIR__ . '/app.php';
     return true;
 }
 

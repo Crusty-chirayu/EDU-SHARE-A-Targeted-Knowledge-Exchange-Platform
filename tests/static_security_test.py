@@ -154,10 +154,10 @@ class StaticSecurityTests(unittest.TestCase):
         self.assertIn("STORAGE_PATH", read(".env.example"))
         self.assertNotIn("DB_PASSWORD=", read("includes/config.php"))
         apache = read(".htaccess")
-        self.assertIn("includes|database|scripts|storage", apache)
+        self.assertIn("app|routes|views|includes|database|scripts|storage", apache)
         self.assertIn("Require all denied", read("storage/.htaccess"))
         nginx = read("deploy/nginx.conf.example")
-        self.assertIn("location ~ ^/(?:includes|database|scripts|storage|tests|deploy)", nginx)
+        self.assertIn("location ~ ^/(?:app|routes|views|includes|database|scripts|storage|tests|deploy)", nginx)
 
     def test_database_artifacts_are_sanitized_and_separated(self) -> None:
         self.assertFalse((ROOT / "project.sql").exists())
@@ -183,6 +183,68 @@ class StaticSecurityTests(unittest.TestCase):
         self.assertNotRegex(combined, r"(?i)\$[A-Za-z_]*(?:password|passwd|pwd)[A-Za-z_]*\s*=\s*['\"][^'\"]{6,}['\"]")
         self.assertNotRegex(combined, r"(?:href|src)=[\"'][^\"']*uploads/")
         self.assertNotIn("project.sql", combined)
+
+    def test_modular_route_preserves_auth_validation_and_data_boundaries(self) -> None:
+        front_controller = read("app.php")
+        self.assertIn("includes/bootstrap.php", front_controller)
+        self.assertIn("ApplicationFactory::create()", front_controller)
+        self.assertIn("ResponseEmitter", front_controller)
+        self.assertNotIn("$_GET['_route']", front_controller)
+        routes = read("routes/app.php")
+        self.assertIn("/api/v1/universities/{universityId}/contributors", routes)
+        self.assertIn("[$authenticated]", routes)
+        validation = read("app/Modules/Profiles/Http/ContributorDirectoryInput.php")
+        self.assertIn("/^[1-9][0-9]*$/D", validation)
+        repository = read("app/Modules/Profiles/Infrastructure/MysqliContributorDirectoryRepository.php")
+        self.assertIn("->prepare(", repository)
+        self.assertIn("bind_param('i', $universityId)", repository)
+        self.assertNotRegex(repository, r"SELECT[^;]*\{\$universityId\}")
+        middleware = read("app/Modules/IdentityAccess/Http/RequireAuthenticated.php")
+        self.assertIn("throw new HttpException(401", middleware)
+        self.assertTrue((ROOT / "university_teachers.php").is_file())
+
+    def test_forward_migrations_are_versioned_and_reject_destructive_sql(self) -> None:
+        runner = read("app/Shared/Persistence/MigrationRunner.php")
+        self.assertIn("schema_migrations", runner)
+        self.assertIn("checksum_sha256", runner)
+        self.assertIn("GET_LOCK", runner)
+        self.assertIn("(?:DROP|TRUNCATE)", runner)
+        self.assertIn("DELETE\\s+FROM", runner)
+        self.assertNotIn("002_p0_finalize.sql", read("scripts/migrate.php"))
+        migration_files = list((ROOT / "database/migrations/forward").glob("*.sql"))
+        self.assertEqual([], migration_files)
+
+    def test_shared_view_foundations_escape_content_and_protect_post_forms(self) -> None:
+        layout = read("includes/layout.php")
+        for helper in (
+            "render_header", "render_flash", "render_errors", "render_form_start",
+            "render_form_end", "render_button", "render_card_start", "render_card_end",
+        ):
+            self.assertIn(f"function {helper}", layout)
+        self.assertIn("csrf_field()", layout)
+        self.assertIn("h($message)", layout)
+        self.assertIn("h($label)", layout)
+        self.assertIn("aria-label=\"Primary navigation\"", layout)
+
+    def test_architecture_documentation_covers_required_boundaries_and_compatibility(self) -> None:
+        adr = read("docs/architecture/ADR-001-incremental-modular-monolith.md")
+        self.assertIn("Incremental Laravel modular monolith", adr)
+        self.assertIn("Incrementally modularize the existing application (selected)", adr)
+        self.assertIn("PHP **8.1+**", adr)
+        modules = read("docs/architecture/modules.md")
+        for module in (
+            "Identity & Access", "Academic Taxonomy", "Resources", "File Ingestion",
+            "Search & Discovery", "Collections", "Profiles", "Moderation",
+            "Notifications", "Analytics", "AI Learning Services",
+        ):
+            self.assertIn(module, modules)
+        strategy = read("docs/architecture/migration-strategy.md")
+        self.assertIn("university_teachers.php", strategy)
+        self.assertIn("P1.2", strategy)
+        self.assertIn("without PHP, Composer, MariaDB/MySQL", strategy)
+        migration_map = read("docs/architecture/migration-map.md")
+        for path in ("process_upload.php", "includes/storage.php", "database/schema.sql", "tests/http_smoke.sh"):
+            self.assertIn(path, migration_map)
 
     def test_bootstrap_and_canonical_routes_are_consistent(self) -> None:
         self.assertIn("includes/bootstrap.php", read("index.php"))

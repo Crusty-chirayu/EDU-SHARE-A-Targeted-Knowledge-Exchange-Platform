@@ -14,6 +14,7 @@ if (getenv('STORAGE_PATH') === false) {
 }
 
 require dirname(__DIR__) . '/includes/bootstrap.php';
+require APP_ROOT . '/app/autoload.php';
 
 $passed = 0;
 $failed = 0;
@@ -72,6 +73,15 @@ check($studentId > 0, 'student registration persists an account');
 check($teacherErrors === [] && $teacherValues['branch'] === null && $teacherValues['year'] === null, 'teacher registration canonicalizes student-only fields');
 $teacherId = register_user($teacherValues);
 check($teacherId > 0, 'teacher registration persists an account');
+
+$directoryRepository = new \EduShare\Modules\Profiles\Infrastructure\MysqliContributorDirectoryRepository(db());
+check($directoryRepository->universityExists(1), 'modular contributor repository finds a known university');
+$universityContributors = $directoryRepository->contributorsAtUniversity(1);
+$matchingContributor = array_filter(
+    $universityContributors,
+    static fn (array $contributor): bool => $contributor['id'] === $teacherId
+);
+check(count($matchingContributor) === 1, 'modular contributor repository returns the newly registered teacher');
 
 [$privilegedValues, $privilegedErrors] = validate_registration_input([
     'role' => 'admin',

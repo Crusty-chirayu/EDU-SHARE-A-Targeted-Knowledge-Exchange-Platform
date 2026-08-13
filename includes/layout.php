@@ -1,6 +1,82 @@
 <?php
 declare(strict_types=1);
 
+/** Render the shared flash component. The message is always escaped. */
+function render_flash(string $message, string $type = 'success'): void
+{
+    $isError = $type === 'error';
+    ?>
+    <div role="alert" class="max-w-5xl mx-auto mt-4 px-4 py-3 rounded border <?= $isError ? 'bg-red-100 border-red-300 text-red-800' : 'bg-green-100 border-green-300 text-green-800' ?>">
+        <?= h($message) ?>
+    </div>
+    <?php
+}
+
+/** @param array<int|string, mixed> $errors */
+function render_errors(array $errors): void
+{
+    $messages = [];
+    foreach ($errors as $error) {
+        if (is_string($error) && $error !== '') {
+            $messages[] = $error;
+        }
+    }
+    if ($messages === []) {
+        return;
+    }
+    ?>
+    <div role="alert" class="bg-red-100 border border-red-300 text-red-800 rounded-lg p-4 mb-4">
+        <p class="font-bold">Please correct the following:</p>
+        <ul class="list-disc ml-5">
+            <?php foreach ($messages as $message): ?><li><?= h($message) ?></li><?php endforeach; ?>
+        </ul>
+    </div>
+    <?php
+}
+
+/** Open a consistently styled form and add CSRF protection to state-changing forms. */
+function render_form_start(string $action, string $method = 'post', string $class = 'space-y-4'): void
+{
+    $method = strtolower($method);
+    if (!in_array($method, ['get', 'post'], true)) {
+        throw new InvalidArgumentException('Only GET and POST forms are supported.');
+    }
+    ?>
+    <form method="<?= h($method) ?>" action="<?= h(app_url($action)) ?>" class="<?= h($class) ?>">
+        <?php if ($method === 'post'): ?><?= csrf_field() ?><?php endif; ?>
+    <?php
+}
+
+function render_form_end(): void
+{
+    echo '</form>';
+}
+
+function render_button(string $label, string $variant = 'primary', string $type = 'submit'): void
+{
+    $variants = [
+        'primary' => 'bg-blue-600 hover:bg-blue-700 text-white',
+        'secondary' => 'bg-gray-200 text-gray-900',
+        'danger' => 'bg-red-600 hover:bg-red-700 text-white',
+    ];
+    $class = $variants[$variant] ?? $variants['primary'];
+    $safeType = in_array($type, ['button', 'submit', 'reset'], true) ? $type : 'button';
+    ?><button type="<?= h($safeType) ?>" class="px-4 py-2 rounded-lg font-medium <?= h($class) ?>"><?= h($label) ?></button><?php
+}
+
+function render_card_start(?string $title = null): void
+{
+    ?><section class="bg-white shadow rounded-lg p-6"><?php
+    if ($title !== null && $title !== '') {
+        ?><h2 class="text-xl font-bold mb-4"><?= h($title) ?></h2><?php
+    }
+}
+
+function render_card_end(): void
+{
+    echo '</section>';
+}
+
 function render_header(string $title, string $active = ''): void
 {
     $user = auth_user();
@@ -49,10 +125,7 @@ function render_header(string $title, string $active = ''): void
     </div>
 </header>
 <?php foreach (consume_flashes() as $message): ?>
-    <?php $isError = ($message['type'] ?? '') === 'error'; ?>
-    <div role="alert" class="max-w-5xl mx-auto mt-4 px-4 py-3 rounded border <?= $isError ? 'bg-red-100 border-red-300 text-red-800' : 'bg-green-100 border-green-300 text-green-800' ?>">
-        <?= h($message['message'] ?? '') ?>
-    </div>
+    <?php render_flash((string) ($message['message'] ?? ''), (string) ($message['type'] ?? 'success')); ?>
 <?php endforeach; ?>
 <?php
 }

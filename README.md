@@ -1,6 +1,8 @@
 # EDU-SHARE
 
-EDU-SHARE is a frameworkless, server-rendered PHP application for targeted academic material exchange. This repository implements **Phase 0: Secure Runnable Foundation** only. It deliberately keeps the existing PHP/MySQL architecture and does not include the proposed Phase 1 resource normalization or a frontend/framework rewrite.
+EDU-SHARE is a frameworkless, server-rendered PHP application for targeted academic material exchange. It preserves the **Phase 0: Secure Runnable Foundation** and adds **P1.1: Architecture Foundation**: a dependency-free modular-monolith boundary, centralized versioned routing, forward migration tooling, and one authenticated contributor-directory vertical slice. Legacy routes remain available. P1.1 does not include the P1.2 Resource/ResourceFile redesign, a frontend rewrite, or AI features.
+
+See [`docs/architecture/`](docs/architecture/README.md) for the architecture decision, bounded modules, actual-file migration map, and compatibility/database/testing strategy.
 
 ## Runtime requirements
 
@@ -84,6 +86,17 @@ For an existing deployment:
 
 The migration is intentionally conservative. It does not silently discard data and does not grant historical teachers administrator access. Test a restored backup before changing production.
 
+## Forward migrations after P1.1
+
+New incremental migrations live only in `database/migrations/forward/` and use the `YYYYMMDDHHMMSS_short_description.sql` naming contract. Inspect status and apply explicitly as a schema-owner account:
+
+```bash
+php scripts/migrate.php status
+php scripts/migrate.php apply
+```
+
+The runner records checksums in `schema_migrations`, prevents concurrent execution, and rejects destructive `DROP`, `TRUNCATE`, and `DELETE FROM` statements. It never automatically replays the historical Phase 0 migration files. P1.1 contains no domain-schema migration; read `database/migrations/forward/README.md` before adding one.
+
 ## Canonical routes
 
 `index.php` is the canonical public entry point. `mainhome.php` permanently redirects to it. `homepage.php` is the authenticated material library; the legacy `lib.php` route redirects compatible filters to `homepage.php` rather than duplicating the implementation.
@@ -106,9 +119,10 @@ The migration is intentionally conservative. It does not silently discard data a
 | `toggle_favorite.php` | JSON POST | CSRF-protected material favorite toggle |
 | `toggle_university_favorite.php` | JSON POST | CSRF-protected university favorite toggle |
 | `get_universities.php`, `get_departments.php`, `get_courses.php`, `get_subjects.php` | GET JSON | Strictly validated dependent-selector data |
-| `university_teachers.php` | GET JSON | Authenticated public staff-card fields only |
+| `university_teachers.php` | GET JSON | Authenticated legacy contributor directory; retained unchanged for compatibility |
+| `/api/v1/universities/{universityId}/contributors` | GET JSON | Authenticated modular contributor directory with a `{ "data": [...] }` response |
 
-All state changes use POST. JSON mutation requests send `Content-Type: application/json` and an `X-CSRF-Token` header. Invalid methods return `405`; malformed requests and IDs return `400`/`422`; unauthenticated access returns `401` or redirects for HTML pages; authorization failures return `403`; missing resources return `404`; duplicate favorites remain idempotent through a single toggle operation.
+The versioned API is dispatched through `app.php` and `routes/app.php`; Apache, Nginx, and the development router examples include the required rewrite. All state changes use POST. JSON mutation requests send `Content-Type: application/json` and an `X-CSRF-Token` header. Invalid methods return `405`; malformed requests and IDs return `400`/`422`; unauthenticated access returns `401` or redirects for HTML pages; authorization failures return `403`; missing resources return `404`; duplicate favorites remain idempotent through a single toggle operation.
 
 ## Role and visibility model
 
@@ -146,12 +160,13 @@ Dependency-free static/security checks are in `tests/static_security_test.py`:
 python3 -m unittest discover -s tests -p '*_test.py' -v
 ```
 
-Runtime integration coverage requires PHP 8.2+ and a disposable MariaDB database initialized from the sanitized schema. A CI-ready GitHub Actions recipe is provided at `deploy/github-actions-p0-security.yml.example`; install it under `.github/workflows/` when repository policy permits. On a configured workstation, run:
+Runtime integration coverage requires PHP 8.1+ and a disposable MariaDB database initialized from the sanitized schema. A CI-ready GitHub Actions recipe is provided at `deploy/github-actions-p0-security.yml.example`; install it under `.github/workflows/` when repository policy permits. On a configured workstation, run:
 
 ```bash
 find . -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 php -l
+php tests/architecture.php
 php tests/integration.php
 bash tests/http_smoke.sh
 ```
 
-See `SECURITY.md` for reporting guidance and the deployment checklist. The application is a P0 foundation, not a completed Phase 1 redesign; operational backup/restore, mail-based account recovery, content moderation workflow, and normalized multi-resource records remain outside this phase.
+See `SECURITY.md` for reporting guidance and the deployment checklist. The application now has a P1.1 migration foundation, not a completed P1.2 redesign; operational backup/restore, mail-based account recovery, content moderation workflow, AI learning services, and normalized Resource/ResourceFile records remain outside this phase.

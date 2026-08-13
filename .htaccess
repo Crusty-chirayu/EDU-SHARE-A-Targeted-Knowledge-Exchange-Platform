@@ -4,7 +4,8 @@ DirectoryIndex index.php
 <IfModule mod_rewrite.c>
     RewriteEngine On
     RewriteRule (^|/)\. - [F,L]
-    RewriteRule ^(?:includes|database|scripts|storage|tests|deploy)(?:/|$) - [F,L,NC]
+    RewriteRule ^(?:app|routes|views|includes|database|scripts|storage|tests|deploy)(?:/|$) - [F,L,NC]
+    RewriteRule ^api/v1(?:/.*)?$ app.php [QSA,L,NC]
 </IfModule>
 
 <FilesMatch "(?i)(?:^\.|\.(?:env|ini|log|sql|sh|bak|dist|example)$)">
