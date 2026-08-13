@@ -1,61 +1,51 @@
 <?php
-session_start();
+declare(strict_types=1);
+require __DIR__ . '/includes/bootstrap.php';
+require_method('GET');
 
-// Check if the user is logged in
-if (!isset($_SESSION['user_id'])) {
-    http_response_code(401);
-    die("Access denied. Please log in.");
+$materialId = positive_int($_GET['id'] ?? null);
+if ($materialId === null) {
+    abort_request(422, 'A valid material ID is required.');
+}
+$material = find_material($materialId);
+if ($material === null) {
+    abort_request(404, 'Material not found.');
 }
 
-// Check if a file is specified
-if (!isset($_GET['file'])) {
-    http_response_code(400);
-    die("File not specified.");
+$user = auth_user();
+if (!can_view_material($material, $user)) {
+    abort_request($user === null ? 401 : 403, $user === null ? 'Log in to access this material.' : 'You cannot access this material.');
 }
 
-// Sanitize the filename to prevent directory traversal attacks
-$filename = basename(urldecode($_GET['file']));
-$file_path = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . $filename;
-
-// Check if the file exists and is a file
-if (!file_exists($file_path) || !is_file($file_path)) {
-    http_response_code(404);
-    die("File not found.");
+$path = safe_storage_path((string) $material['file_path']);
+if ($path === null) {
+    app_log('warning', 'Material storage object missing or invalid', ['material_id' => $materialId]);
+    abort_request(404, 'The file is unavailable.');
 }
 
-// Determine the file's MIME type
-$mime_type = 'application/octet-stream';
-$extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-switch ($extension) {
-    case 'pdf':
-        $mime_type = 'application/pdf';
-        break;
-    case 'doc':
-    case 'docx':
-        $mime_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-        break;
-    case 'ppt':
-    case 'pptx':
-        $mime_type = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-        break;
-    case 'xls':
-    case 'xlsx':
-        $mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-        break;
-    // Add more cases for other file types if needed
+$allowedMimes = [];
+foreach (allowed_upload_types() as $type) {
+    $allowedMimes = array_merge($allowedMimes, $type['mime']);
 }
+$mime = in_array($material['mime_type'], $allowedMimes, true)
+    ? (string) $material['mime_type']
+    : 'application/octet-stream';
+$originalName = sanitize_original_filename((string) ($material['original_filename'] ?: 'material-' . $materialId));
+$fallbackName = preg_replace('/[^A-Za-z0-9._-]/', '_', $originalName) ?: 'material-' . $materialId;
+$inlineAllowed = in_array($mime, ['application/pdf', 'text/plain'], true);
+$disposition = (isset($_GET['download']) && $_GET['download'] === '1') || !$inlineAllowed ? 'attachment' : 'inline';
 
-// Set headers for download or inline view
-header('Content-Description: File Transfer');
-header('Content-Type: ' . $mime_type);
-header('Content-Disposition: ' . (isset($_GET['download']) ? 'attachment' : 'inline') . '; filename="' . $filename . '"');
-header('Content-Transfer-Encoding: binary');
-header('Expires: 0');
-header('Cache-Control: must-revalidate, post-check=0, pre-check=0');
-header('Pragma: public');
-header('Content-Length: ' . filesize($file_path));
+header('Content-Type: ' . $mime);
+header("Content-Disposition: {$disposition}; filename=\"{$fallbackName}\"; filename*=UTF-8''" . rawurlencode($originalName));
+header('Content-Length: ' . (string) filesize($path));
+header('Cache-Control: private, no-store, max-age=0');
+header('Pragma: no-cache');
+header('X-Content-Type-Options: nosniff');
 
-// Read the file and send it to the browser
-readfile($file_path);
+$stream = fopen($path, 'rb');
+if ($stream === false) {
+    abort_request(500, 'The file could not be read.');
+}
+fpassthru($stream);
+fclose($stream);
 exit;
-?>

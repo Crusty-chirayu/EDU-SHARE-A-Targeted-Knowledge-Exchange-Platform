@@ -1,11 +1,7 @@
 <?php
-header('Content-Type: application/json');
-require '../db_connect.php';
+declare(strict_types=1);
+require __DIR__ . '/includes/bootstrap.php';
+require_method('GET');
 
-$sql = "SELECT id, name FROM universities ORDER BY name ASC";
-$result = $conn->query($sql);
-$universities = $result->fetch_all(MYSQLI_ASSOC);
-echo json_encode($universities);
-
-$conn->close();
-?>
+$rows = db()->query('SELECT id, name FROM universities ORDER BY name')->fetch_all(MYSQLI_ASSOC);
+json_response($rows);

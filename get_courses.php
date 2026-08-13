@@ -1,19 +1,13 @@
 <?php
-header('Content-Type: application/json');
-require '../db_connect.php';
+declare(strict_types=1);
+require __DIR__ . '/includes/bootstrap.php';
+require_method('GET');
 
-$department_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
-
-if ($department_id > 0) {
-    $stmt = $conn->prepare("SELECT id, name FROM courses WHERE department_id = ? ORDER BY name ASC");
-    $stmt->bind_param("i", $department_id);
-    $stmt->execute();
-    $result = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    echo json_encode($result);
-    $stmt->close();
-} else {
-    echo json_encode([]);
+$departmentId = positive_int($_GET['id'] ?? null);
+if ($departmentId === null) {
+    abort_request(422, 'A valid department ID is required.');
 }
-
-$conn->close();
-?>
+$statement = db()->prepare('SELECT id, name FROM courses WHERE department_id = ? ORDER BY name');
+$statement->bind_param('i', $departmentId);
+$statement->execute();
+json_response($statement->get_result()->fetch_all(MYSQLI_ASSOC));

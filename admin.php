@@ -1,250 +1,148 @@
-```php
 <?php
-session_start();
-require '../db_connect.php';
+declare(strict_types=1);
+require __DIR__ . '/includes/bootstrap.php';
+require __DIR__ . '/includes/layout.php';
+require_method('GET', 'POST');
 
-// Only allow admin/teacher
-if (!isset($_SESSION['user_id']) || ($_SESSION['user_type'] ?? '') !== 'teacher') {
-    die("Unauthorized Access");
-}
+require_ability('manage_academics');
 
-// Handle delete requests
-if (isset($_GET['delete']) && isset($_GET['type'])) {
-    $id = intval($_GET['delete']);
-    $type = $_GET['type'];
-
-    if ($type === 'department') {
-        $conn->query("DELETE FROM departments WHERE id = $id");
-    } elseif ($type === 'course') {
-        $conn->query("DELETE FROM courses WHERE id = $id");
-    } elseif ($type === 'subject') {
-        $conn->query("DELETE FROM subjects WHERE id = $id");
-    }
-    header("Location: manage_academics.php");
-    exit();
-}
-
-// Handle updates
-if (isset($_POST['update_department'])) {
-    $id = intval($_POST['id']);
-    $name = trim($_POST['department_name']);
-    $stmt = $conn->prepare("UPDATE departments SET department_name = ? WHERE id = ?");
-    $stmt->bind_param("si", $name, $id);
-    $stmt->execute();
-}
-if (isset($_POST['update_course'])) {
-    $id = intval($_POST['id']);
-    $name = trim($_POST['course_name']);
-    $stmt = $conn->prepare("UPDATE courses SET course_name = ? WHERE id = ?");
-    $stmt->bind_param("si", $name, $id);
-    $stmt->execute();
-}
-if (isset($_POST['update_subject'])) {
-    $id = intval($_POST['id']);
-    $name = trim($_POST['subject_name']);
-    $stmt = $conn->prepare("UPDATE subjects SET subject_name = ? WHERE id = ?");
-    $stmt->bind_param("si", $name, $id);
-    $stmt->execute();
-}
-
-// Handle add requests
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    if (isset($_POST['add_department'])) {
-        $uni_id = intval($_POST['university']);
-        $department_name = trim($_POST['department_name']);
-        if ($uni_id && $department_name) {
-            $stmt = $conn->prepare("INSERT INTO departments (department_name, university_id) VALUES (?, ?)");
-            $stmt->bind_param("si", $department_name, $uni_id);
-            $stmt->execute();
+if (request_method() === 'POST') {
+    require_csrf();
+    $action = is_string($_POST['action'] ?? null) ? $_POST['action'] : '';
+    try {
+        if ($action === 'add_university') {
+            $name = canonical_text($_POST['name'] ?? '');
+            if (!valid_taxonomy_name($name)) {
+                abort_request(422, 'Enter a valid university name of at most 150 characters.');
+            }
+            $statement = db()->prepare('INSERT INTO universities (name) VALUES (?)');
+            $statement->bind_param('s', $name);
+            $statement->execute();
+        } elseif ($action === 'add_department') {
+            $name = canonical_text($_POST['name'] ?? '');
+            $universityId = positive_int($_POST['university_id'] ?? null);
+            if (!valid_taxonomy_name($name) || $universityId === null || !db_row_exists('universities', $universityId)) {
+                abort_request(422, 'Choose a university and enter a valid department name.');
+            }
+            $statement = db()->prepare('INSERT INTO departments (university_id, name) VALUES (?, ?)');
+            $statement->bind_param('is', $universityId, $name);
+            $statement->execute();
+        } elseif ($action === 'add_course') {
+            $name = canonical_text($_POST['name'] ?? '');
+            $departmentId = positive_int($_POST['department_id'] ?? null);
+            if (!valid_taxonomy_name($name) || $departmentId === null || !db_row_exists('departments', $departmentId)) {
+                abort_request(422, 'Choose a department and enter a valid course name.');
+            }
+            $statement = db()->prepare('INSERT INTO courses (name, department_id) VALUES (?, ?)');
+            $statement->bind_param('si', $name, $departmentId);
+            $statement->execute();
+        } elseif ($action === 'add_subject') {
+            $name = canonical_text($_POST['name'] ?? '');
+            $courseId = positive_int($_POST['course_id'] ?? null);
+            $semester = positive_int($_POST['semester'] ?? null);
+            if (!valid_taxonomy_name($name) || $courseId === null || $semester === null || $semester > 12) {
+                abort_request(422, 'Choose a course and semester and enter a valid subject name.');
+            }
+            $course = db()->prepare('SELECT department_id FROM courses WHERE id = ?');
+            $course->bind_param('i', $courseId);
+            $course->execute();
+            $courseRow = $course->get_result()->fetch_assoc();
+            if ($courseRow === null) {
+                abort_request(422, 'The selected course does not exist.');
+            }
+            $statement = db()->prepare('INSERT INTO subjects (name, course_id, department_id, semester) VALUES (?, ?, ?, ?)');
+            $statement->bind_param('siii', $name, $courseId, $courseRow['department_id'], $semester);
+            $statement->execute();
+        } elseif ($action === 'update') {
+            $type = is_string($_POST['type'] ?? null) ? $_POST['type'] : '';
+            $id = positive_int($_POST['id'] ?? null);
+            $name = canonical_text($_POST['name'] ?? '');
+            $tables = ['university' => 'universities', 'department' => 'departments', 'course' => 'courses', 'subject' => 'subjects'];
+            if (!isset($tables[$type]) || $id === null || !valid_taxonomy_name($name)) {
+                abort_request(422, 'The academic record is invalid.');
+            }
+            $statement = db()->prepare("UPDATE {$tables[$type]} SET name = ? WHERE id = ?");
+            $statement->bind_param('si', $name, $id);
+            $statement->execute();
+            if ($statement->affected_rows === 0 && !db_row_exists($tables[$type], $id)) {
+                abort_request(404, 'Academic record not found.');
+            }
+        } elseif ($action === 'delete') {
+            $type = is_string($_POST['type'] ?? null) ? $_POST['type'] : '';
+            $id = positive_int($_POST['id'] ?? null);
+            $tables = ['university' => 'universities', 'department' => 'departments', 'course' => 'courses', 'subject' => 'subjects'];
+            if (!isset($tables[$type]) || $id === null) {
+                abort_request(422, 'The academic record is invalid.');
+            }
+            $statement = db()->prepare("DELETE FROM {$tables[$type]} WHERE id = ?");
+            $statement->bind_param('i', $id);
+            $statement->execute();
+            if ($statement->affected_rows !== 1) {
+                abort_request(404, 'Academic record not found.');
+            }
+        } else {
+            abort_request(422, 'Unknown academic operation.');
         }
-    }
 
-    if (isset($_POST['add_course'])) {
-        $dept_id = intval($_POST['department']);
-        $course_name = trim($_POST['course_name']);
-        if ($dept_id && $course_name) {
-            $stmt = $conn->prepare("INSERT INTO courses (course_name, department_id) VALUES (?, ?)");
-            $stmt->bind_param("si", $course_name, $dept_id);
-            $stmt->execute();
+        flash('success', 'Academic data updated.');
+        redirect('admin.php');
+    } catch (mysqli_sql_exception $exception) {
+        if (in_array($exception->getCode(), [1062, 1451, 1452], true)) {
+            flash('error', $exception->getCode() === 1062
+                ? 'That academic entry already exists.'
+                : 'This change conflicts with related academic or material records.');
+            redirect('admin.php');
         }
+        throw $exception;
     }
+}
 
-    if (isset($_POST['add_subject'])) {
-        $course_id = intval($_POST['course']);
-        $subject_name = trim($_POST['subject_name']);
-        if ($course_id && $subject_name) {
-            $stmt = $conn->prepare("INSERT INTO subjects (subject_name, course_id) VALUES (?, ?)");
-            $stmt->bind_param("si", $subject_name, $course_id);
-            $stmt->execute();
-        }
-    }
+$universities = db()->query('SELECT id, name FROM universities ORDER BY name')->fetch_all(MYSQLI_ASSOC);
+$departments = db()->query(
+    'SELECT d.id, d.name, d.university_id, u.name AS parent_name FROM departments d JOIN universities u ON u.id = d.university_id ORDER BY u.name, d.name'
+)->fetch_all(MYSQLI_ASSOC);
+$courses = db()->query(
+    'SELECT c.id, c.name, c.department_id, d.name AS parent_name FROM courses c JOIN departments d ON d.id = c.department_id ORDER BY d.name, c.name'
+)->fetch_all(MYSQLI_ASSOC);
+$subjects = db()->query(
+    'SELECT s.id, s.name, s.course_id, s.semester, c.name AS parent_name FROM subjects s JOIN courses c ON c.id = s.course_id ORDER BY c.name, s.semester, s.name'
+)->fetch_all(MYSQLI_ASSOC);
+
+render_header('Manage academics', 'admin');
+
+function academic_list(string $type, array $items): void
+{
+    ?>
+    <section class="bg-white p-6 rounded-xl shadow">
+        <h2 class="text-xl font-bold mb-4"><?= h(ucfirst($type)) ?> records</h2>
+        <div class="space-y-3 max-h-96 overflow-auto">
+            <?php foreach ($items as $item): ?>
+                <div class="border rounded-lg p-3">
+                    <form method="post" action="<?= h(app_url('admin.php')) ?>" class="flex flex-wrap gap-2 items-center">
+                        <?= csrf_field() ?><input type="hidden" name="action" value="update"><input type="hidden" name="type" value="<?= h($type) ?>"><input type="hidden" name="id" value="<?= (int) $item['id'] ?>">
+                        <input name="name" value="<?= h($item['name']) ?>" maxlength="150" required class="border rounded p-2 flex-1 min-w-40">
+                        <span class="text-xs text-gray-500"><?= h($item['parent_name'] ?? '') ?><?= isset($item['semester']) ? ' · semester ' . (int) $item['semester'] : '' ?></span>
+                        <button class="bg-yellow-500 text-gray-900 px-3 py-2 rounded">Update</button>
+                    </form>
+                    <form method="post" action="<?= h(app_url('admin.php')) ?>" class="mt-2">
+                        <?= csrf_field() ?><input type="hidden" name="action" value="delete"><input type="hidden" name="type" value="<?= h($type) ?>"><input type="hidden" name="id" value="<?= (int) $item['id'] ?>"><button class="text-red-700 text-sm">Delete</button>
+                    </form>
+                </div>
+            <?php endforeach; ?>
+        </div>
+    </section>
+    <?php
 }
 ?>
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Manage Academics</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-gray-100 p-6 font-sans">
-    <h1 class="text-3xl font-bold mb-6">Admin Panel – Manage Departments, Courses & Subjects</h1>
-
-    <!-- Add Department -->
-    <div class="bg-white p-6 rounded-lg shadow-md mb-6">
-        <h2 class="text-xl font-semibold mb-4">Add Department</h2>
-        <form method="POST" class="space-y-4">
-            <select name="university" required class="border p-2 rounded w-full">
-                <option value="">Select University</option>
-                <?php
-                $res = $conn->query("SELECT id, university_name FROM universities");
-                while ($row = $res->fetch_assoc()) {
-                    echo "<option value='{$row['id']}'>{$row['university_name']}</option>";
-                }
-                ?>
-            </select>
-            <input type="text" name="department_name" placeholder="Department Name" required class="border p-2 rounded w-full">
-            <button type="submit" name="add_department" class="bg-blue-600 text-white px-4 py-2 rounded">Add Department</button>
-        </form>
+<main class="max-w-7xl mx-auto py-10 px-4">
+    <h1 class="text-4xl font-extrabold mb-2">Manage academic taxonomy</h1>
+    <p class="text-gray-600 mb-8">Only explicit administrators can change this hierarchy. Deletion is blocked while dependent records exist.</p>
+    <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
+        <form method="post" action="<?= h(app_url('admin.php')) ?>" class="bg-white p-5 rounded-xl shadow space-y-3"><?= csrf_field() ?><input type="hidden" name="action" value="add_university"><h2 class="font-bold">Add university</h2><input name="name" maxlength="150" required placeholder="University name" class="w-full border rounded p-2"><button class="bg-blue-600 text-white px-4 py-2 rounded">Add</button></form>
+        <form method="post" action="<?= h(app_url('admin.php')) ?>" class="bg-white p-5 rounded-xl shadow space-y-3"><?= csrf_field() ?><input type="hidden" name="action" value="add_department"><h2 class="font-bold">Add department</h2><select name="university_id" required class="w-full border rounded p-2"><option value="">University</option><?php foreach ($universities as $item): ?><option value="<?= (int) $item['id'] ?>"><?= h($item['name']) ?></option><?php endforeach; ?></select><input name="name" maxlength="150" required placeholder="Department name" class="w-full border rounded p-2"><button class="bg-blue-600 text-white px-4 py-2 rounded">Add</button></form>
+        <form method="post" action="<?= h(app_url('admin.php')) ?>" class="bg-white p-5 rounded-xl shadow space-y-3"><?= csrf_field() ?><input type="hidden" name="action" value="add_course"><h2 class="font-bold">Add course</h2><select name="department_id" required class="w-full border rounded p-2"><option value="">Department</option><?php foreach ($departments as $item): ?><option value="<?= (int) $item['id'] ?>"><?= h($item['parent_name'] . ' · ' . $item['name']) ?></option><?php endforeach; ?></select><input name="name" maxlength="150" required placeholder="Course name" class="w-full border rounded p-2"><button class="bg-blue-600 text-white px-4 py-2 rounded">Add</button></form>
+        <form method="post" action="<?= h(app_url('admin.php')) ?>" class="bg-white p-5 rounded-xl shadow space-y-3"><?= csrf_field() ?><input type="hidden" name="action" value="add_subject"><h2 class="font-bold">Add subject</h2><select name="course_id" required class="w-full border rounded p-2"><option value="">Course</option><?php foreach ($courses as $item): ?><option value="<?= (int) $item['id'] ?>"><?= h($item['parent_name'] . ' · ' . $item['name']) ?></option><?php endforeach; ?></select><select name="semester" required class="w-full border rounded p-2"><option value="">Semester</option><?php for ($semester = 1; $semester <= 12; $semester++): ?><option value="<?= $semester ?>"><?= $semester ?></option><?php endfor; ?></select><input name="name" maxlength="150" required placeholder="Subject name" class="w-full border rounded p-2"><button class="bg-blue-600 text-white px-4 py-2 rounded">Add</button></form>
     </div>
-
-    <!-- Department List -->
-    <div class="bg-white p-6 rounded-lg shadow-md mb-6">
-        <h2 class="text-xl font-semibold mb-4">Departments</h2>
-        <table class="w-full border">
-            <tr class="bg-gray-200">
-                <th class="p-2 border">ID</th>
-                <th class="p-2 border">Name</th>
-                <th class="p-2 border">University</th>
-                <th class="p-2 border">Action</th>
-            </tr>
-            <?php
-            $res = $conn->query("SELECT d.id, d.department_name, u.university_name 
-                                 FROM departments d 
-                                 JOIN universities u ON d.university_id = u.id");
-            while ($row = $res->fetch_assoc()) {
-                echo "<tr>
-                        <td class='p-2 border'>{$row['id']}</td>
-                        <td class='p-2 border'>
-                            <form method='POST' class='flex'>
-                                <input type='hidden' name='id' value='{$row['id']}'>
-                                <input type='text' name='department_name' value='{$row['department_name']}' class='border p-1 rounded w-full'>
-                                <button type='submit' name='update_department' class='ml-2 bg-yellow-500 text-white px-2 rounded'>Update</button>
-                            </form>
-                        </td>
-                        <td class='p-2 border'>{$row['university_name']}</td>
-                        <td class='p-2 border'>
-                            <a href='?delete={$row['id']}&type=department' class='text-red-600'>Delete</a>
-                        </td>
-                      </tr>";
-            }
-            ?>
-        </table>
-    </div>
-
-    <!-- Add Course -->
-    <div class="bg-white p-6 rounded-lg shadow-md mb-6">
-        <h2 class="text-xl font-semibold mb-4">Add Course</h2>
-        <form method="POST" class="space-y-4">
-            <select name="department" required class="border p-2 rounded w-full">
-                <option value="">Select Department</option>
-                <?php
-                $res = $conn->query("SELECT id, department_name FROM departments");
-                while ($row = $res->fetch_assoc()) {
-                    echo "<option value='{$row['id']}'>{$row['department_name']}</option>";
-                }
-                ?>
-            </select>
-            <input type="text" name="course_name" placeholder="Course Name" required class="border p-2 rounded w-full">
-            <button type="submit" name="add_course" class="bg-green-600 text-white px-4 py-2 rounded">Add Course</button>
-        </form>
-    </div>
-
-    <!-- Course List -->
-    <div class="bg-white p-6 rounded-lg shadow-md mb-6">
-        <h2 class="text-xl font-semibold mb-4">Courses</h2>
-        <table class="w-full border">
-            <tr class="bg-gray-200">
-                <th class="p-2 border">ID</th>
-                <th class="p-2 border">Name</th>
-                <th class="p-2 border">Department</th>
-                <th class="p-2 border">Action</th>
-            </tr>
-            <?php
-            $res = $conn->query("SELECT c.id, c.course_name, d.department_name 
-                                 FROM courses c 
-                                 JOIN departments d ON c.department_id = d.id");
-            while ($row = $res->fetch_assoc()) {
-                echo "<tr>
-                        <td class='p-2 border'>{$row['id']}</td>
-                        <td class='p-2 border'>
-                            <form method='POST' class='flex'>
-                                <input type='hidden' name='id' value='{$row['id']}'>
-                                <input type='text' name='course_name' value='{$row['course_name']}' class='border p-1 rounded w-full'>
-                                <button type='submit' name='update_course' class='ml-2 bg-yellow-500 text-white px-2 rounded'>Update</button>
-                            </form>
-                        </td>
-                        <td class='p-2 border'>{$row['department_name']}</td>
-                        <td class='p-2 border'>
-                            <a href='?delete={$row['id']}&type=course' class='text-red-600'>Delete</a>
-                        </td>
-                      </tr>";
-            }
-            ?>
-        </table>
-    </div>
-
-    <!-- Add Subject -->
-    <div class="bg-white p-6 rounded-lg shadow-md mb-6">
-        <h2 class="text-xl font-semibold mb-4">Add Subject</h2>
-        <form method="POST" class="space-y-4">
-            <select name="course" required class="border p-2 rounded w-full">
-                <option value="">Select Course</option>
-                <?php
-                $res = $conn->query("SELECT id, course_name FROM courses");
-                while ($row = $res->fetch_assoc()) {
-                    echo "<option value='{$row['id']}'>{$row['course_name']}</option>";
-                }
-                ?>
-            </select>
-            <input type="text" name="subject_name" placeholder="Subject Name" required class="border p-2 rounded w-full">
-            <button type="submit" name="add_subject" class="bg-purple-600 text-white px-4 py-2 rounded">Add Subject</button>
-        </form>
-    </div>
-
-    <!-- Subject List -->
-    <div class="bg-white p-6 rounded-lg shadow-md">
-        <h2 class="text-xl font-semibold mb-4">Subjects</h2>
-        <table class="w-full border">
-            <tr class="bg-gray-200">
-                <th class="p-2 border">ID</th>
-                <th class="p-2 border">Name</th>
-                <th class="p-2 border">Course</th>
-                <th class="p-2 border">Action</th>
-            </tr>
-            <?php
-            $res = $conn->query("SELECT s.id, s.subject_name, c.course_name 
-                                 FROM subjects s 
-                                 JOIN courses c ON s.course_id = c.id");
-            while ($row = $res->fetch_assoc()) {
-                echo "<tr>
-                        <td class='p-2 border'>{$row['id']}</td>
-                        <td class='p-2 border'>
-                            <form method='POST' class='flex'>
-                                <input type='hidden' name='id' value='{$row['id']}'>
-                                <input type='text' name='subject_name' value='{$row['subject_name']}' class='border p-1 rounded w-full'>
-                                <button type='submit' name='update_subject' class='ml-2 bg-yellow-500 text-white px-2 rounded'>Update</button>
-                            </form>
-                        </td>
-                        <td class='p-2 border'>{$row['course_name']}</td>
-                        <td class='p-2 border'>
-                            <a href='?delete={$row['id']}&type=subject' class='text-red-600'>Delete</a>
-                        </td>
-                      </tr>";
-            }
-            ?>
-        </table>
-    </div>
-
-</body>
-</html>
-```
+    <div class="grid lg:grid-cols-2 gap-6"><?php academic_list('university', $universities); academic_list('department', $departments); academic_list('course', $courses); academic_list('subject', $subjects); ?></div>
+</main>
+<?php render_footer(); ?>

@@ -1,0 +1,76 @@
+name: P0 security and integration
+
+on:
+  push:
+    branches:
+      - main
+      - 'arena/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run dependency-free static security checks
+        run: python3 -m unittest discover -s tests -p '*_test.py' -v
+
+  php-mariadb-integration:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: root-integration-only
+          MARIADB_DATABASE: edu_share
+          MARIADB_USER: edu_share_app
+          MARIADB_PASSWORD: app-integration-only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      APP_ENV: test
+      APP_DEBUG: 'false'
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: edu_share
+      DB_USERNAME: edu_share_app
+      DB_PASSWORD: app-integration-only
+      STORAGE_PATH: ${{ runner.temp }}/edu-share-private
+      SESSION_NAME: edushare_test_session
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PHP runtime
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mysqli, fileinfo, mbstring
+          coverage: none
+      - name: Lint PHP
+        run: find . -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 php -l
+      - name: Initialize sanitized database
+        run: |
+          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only edu_share < database/schema.sql
+          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only edu_share < database/seed_demo.sql
+      - name: Run PHP and database integration checks
+        run: php tests/integration.php
+      - name: Run HTTP lifecycle and security smoke checks
+        run: bash tests/http_smoke.sh
+      - name: Validate conservative legacy migration
+        run: |
+          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only -e "CREATE DATABASE edu_share_legacy CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; GRANT ALL ON edu_share_legacy.* TO 'edu_share_app'@'%';"
+          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only edu_share_legacy < tests/legacy_schema_fixture.sql
+          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only edu_share_legacy < database/migrations/001_p0_prepare.sql
+          mkdir -p uploads
+          printf '%%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%%%EOF\n' > uploads/legacy-test.pdf
+          DB_DATABASE=edu_share_legacy STORAGE_PATH="${{ runner.temp }}/edu-share-legacy-private" php scripts/migrate_legacy_uploads.php
+          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only edu_share_legacy < database/migrations/002_p0_finalize.sql
+          mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root -proot-integration-only -Nse "SELECT IF(file_path REGEXP '^[a-f0-9]{32}\\.pdf$', 'ok', 'failed') FROM edu_share_legacy.materials WHERE id = 1" | grep -qx ok
+          rm -f uploads/legacy-test.pdf

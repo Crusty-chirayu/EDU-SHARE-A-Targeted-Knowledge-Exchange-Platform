@@ -1,50 +1,24 @@
 <?php
-session_start();
-require '../db_connect.php';
+declare(strict_types=1);
+require __DIR__ . '/includes/bootstrap.php';
+require_method('GET');
+require_auth(true);
 
-header('Content-Type: application/json');
-
-if (!isset($_SESSION['user_id'])) {
-    echo json_encode(['status' => 'error', 'message' => 'User not logged in.']);
-    exit();
+$universityId = positive_int($_GET['university_id'] ?? null);
+if ($universityId === null) {
+    abort_request(422, 'A valid university ID is required.');
+}
+if (!db_row_exists('universities', $universityId)) {
+    abort_request(404, 'University not found.');
 }
 
-$user_id = $_SESSION['user_id'];
-$data = json_decode(file_get_contents('php://input'), true);
-$university_id = $data['university_id'] ?? null;
-
-if (!$university_id) {
-    echo json_encode(['status' => 'error', 'message' => 'Invalid university ID.']);
-    exit();
-}
-
-try {
-    // Check if the university is already a favorite
-    $sql_check = "SELECT id FROM university_favorites WHERE user_id = ? AND university_id = ?";
-    $stmt_check = $conn->prepare($sql_check);
-    $stmt_check->bind_param('ii', $user_id, $university_id);
-    $stmt_check->execute();
-    $result_check = $stmt_check->get_result();
-
-    if ($result_check->num_rows > 0) {
-        // It's a favorite, so remove it
-        $sql_delete = "DELETE FROM university_favorites WHERE user_id = ? AND university_id = ?";
-        $stmt_delete = $conn->prepare($sql_delete);
-        $stmt_delete->bind_param('ii', $user_id, $university_id);
-        $stmt_delete->execute();
-        echo json_encode(['status' => 'success', 'action' => 'removed']);
-    } else {
-        // Not a favorite, so add it
-        $sql_insert = "INSERT INTO university_favorites (user_id, university_id) VALUES (?, ?)";
-        $stmt_insert = $conn->prepare($sql_insert);
-        $stmt_insert->bind_param('ii', $user_id, $university_id);
-        $stmt_insert->execute();
-        echo json_encode(['status' => 'success', 'action' => 'added']);
-    }
-
-    $conn->close();
-
-} catch (Exception $e) {
-    echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
-}
-?>
+$statement = db()->prepare(
+    "SELECT u.id, u.full_name, u.user_type, d.name AS department_name
+       FROM users u
+       LEFT JOIN departments d ON d.id = u.department_id
+      WHERE u.university_id = ? AND u.user_type IN ('teacher', 'moderator', 'admin')
+      ORDER BY u.full_name"
+);
+$statement->bind_param('i', $universityId);
+$statement->execute();
+json_response($statement->get_result()->fetch_all(MYSQLI_ASSOC));

@@ -1,51 +1,61 @@
 <?php
-session_start();
-// This is the corrected path to the database connection file
-require '../db_connect.php'; 
+declare(strict_types=1);
+require __DIR__ . '/includes/bootstrap.php';
 
-if (!isset($_SESSION['user_id'])) {
-    header("Location: ../../login/login1.php");
-    exit();
+require_method('POST');
+$user = require_auth();
+require_csrf();
+$materialId = positive_int($_POST['id'] ?? null);
+if ($materialId === null) {
+    abort_request(422, 'A valid material ID is required.');
 }
 
-if (!isset($_GET['id'])) {
-    header("Location: dashboard.php");
-    exit();
+$connection = db();
+$connection->begin_transaction();
+$originalPath = null;
+$quarantinePath = null;
+try {
+    $statement = $connection->prepare(
+        'SELECT id, user_id, file_path, visibility, status FROM materials WHERE id = ? FOR UPDATE'
+    );
+    $statement->bind_param('i', $materialId);
+    $statement->execute();
+    $material = $statement->get_result()->fetch_assoc();
+    if ($material === null) {
+        abort_request(404, 'Material not found.');
+    }
+    if (!can_delete_material($material, $user)) {
+        abort_request(403, 'You do not have permission to delete this material.');
+    }
+
+    $originalPath = safe_storage_path((string) $material['file_path']);
+    if ($originalPath !== null) {
+        $trashDirectory = (string) app_config('storage_path') . '/trash';
+        ensure_private_directory($trashDirectory);
+        $quarantinePath = $trashDirectory . '/' . bin2hex(random_bytes(16)) . '.deleted';
+        if (!rename($originalPath, $quarantinePath)) {
+            throw new RuntimeException('Unable to quarantine material before deletion.');
+        }
+    }
+
+    $delete = $connection->prepare('DELETE FROM materials WHERE id = ?');
+    $delete->bind_param('i', $materialId);
+    $delete->execute();
+    $connection->commit();
+
+    if ($quarantinePath !== null && is_file($quarantinePath) && !@unlink($quarantinePath)) {
+        app_log('warning', 'Unable to remove quarantined material', ['material_id' => $materialId]);
+    }
+    flash('success', 'Material deleted.');
+    redirect('dashboard.php');
+} catch (Throwable $exception) {
+    $connection->rollback();
+    if ($quarantinePath !== null && $originalPath !== null && is_file($quarantinePath) && !file_exists($originalPath)) {
+        @rename($quarantinePath, $originalPath);
+    }
+    if ($exception instanceof AppHttpException) {
+        throw $exception;
+    }
+    app_log('error', 'Material deletion failed', ['material_id' => $materialId, 'type' => $exception::class]);
+    abort_request(500, 'The material could not be deleted.');
 }
-
-$user_id = $_SESSION['user_id'];
-$material_id = (int)$_GET['id'];
-
-// 1. Get the file path from the database and verify ownership
-$stmt = $conn->prepare("SELECT file_path, user_id FROM materials WHERE id = ?");
-$stmt->bind_param("i", $material_id);
-$stmt->execute();
-$result = $stmt->get_result();
-$material = $result->fetch_assoc();
-$stmt->close();
-
-if (!$material || $material['user_id'] != $user_id) {
-    die("Error: Material not found or you do not have permission to delete it.");
-}
-
-$file_path = $material['file_path'];
-
-// 2. Delete the database record first
-$stmt = $conn->prepare("DELETE FROM materials WHERE id = ? AND user_id = ?");
-$stmt->bind_param("ii", $material_id, $user_id);
-$stmt->execute();
-$stmt->close();
-
-// 3. Delete the physical file from the server
-// This path is also corrected to be relative to the 'home' directory
-$full_file_path = __DIR__ . '/../upload/' . $file_path;
-if (file_exists($full_file_path)) {
-    unlink($full_file_path);
-}
-
-$conn->close();
-
-// Redirect back to the dashboard after successful deletion.
-header("Location: dashboard.php");
-exit();
-?>

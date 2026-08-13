@@ -1,0 +1,19 @@
+# Example location block when the repository root is the web document root.
+# Prefer a separate STORAGE_PATH outside this root. Adapt the PHP-FPM socket to your host.
+index index.php;
+autoindex off;
+
+location ~ ^/(?:includes|database|scripts|storage|tests|deploy)(?:/|$) { return 404; }
+location ~ (^|/)\. { return 404; }
+location ~* \.(?:env|ini|log|sql|sh|bak)$ { return 404; }
+
+location / {
+    try_files $uri $uri/ =404;
+}
+
+location ~ \.php$ {
+    try_files $uri =404;
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    fastcgi_pass unix:/run/php/php-fpm.sock;
+}

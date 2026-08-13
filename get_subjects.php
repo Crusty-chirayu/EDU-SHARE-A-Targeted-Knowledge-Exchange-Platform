@@ -1,19 +1,20 @@
 <?php
-header('Content-Type: application/json');
-require '../db_connect.php';
+declare(strict_types=1);
+require __DIR__ . '/includes/bootstrap.php';
+require_method('GET');
 
-$course_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
-
-if ($course_id > 0) {
-    $stmt = $conn->prepare("SELECT id, name FROM subjects WHERE course_id = ? ORDER BY name ASC");
-    $stmt->bind_param("i", $course_id);
-    $stmt->execute();
-    $result = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    echo json_encode($result);
-    $stmt->close();
-} else {
-    echo json_encode([]);
+$courseId = positive_int($_GET['id'] ?? null);
+$semester = isset($_GET['semester']) ? positive_int($_GET['semester']) : null;
+if ($courseId === null || (isset($_GET['semester']) && ($semester === null || $semester > 12))) {
+    abort_request(422, 'A valid course and semester are required.');
 }
 
-$conn->close();
-?>
+if ($semester === null) {
+    $statement = db()->prepare('SELECT id, name, semester FROM subjects WHERE course_id = ? ORDER BY semester, name');
+    $statement->bind_param('i', $courseId);
+} else {
+    $statement = db()->prepare('SELECT id, name, semester FROM subjects WHERE course_id = ? AND semester = ? ORDER BY name');
+    $statement->bind_param('ii', $courseId, $semester);
+}
+$statement->execute();
+json_response($statement->get_result()->fetch_all(MYSQLI_ASSOC));

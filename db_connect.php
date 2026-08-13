@@ -1,14 +1,9 @@
 <?php
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "project";
+declare(strict_types=1);
 
-// Create connection
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-// Check connection
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
+// Compatibility entry point for legacy includes. New pages load includes/bootstrap.php directly.
+require_once __DIR__ . '/includes/bootstrap.php';
+if (realpath((string) ($_SERVER['SCRIPT_FILENAME'] ?? '')) === __FILE__) {
+    abort_request(404, 'Not found.');
 }
-?>
+$conn = db();

@@ -1,0 +1,18 @@
+Options -Indexes
+DirectoryIndex index.php
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule (^|/)\. - [F,L]
+    RewriteRule ^(?:includes|database|scripts|storage|tests|deploy)(?:/|$) - [F,L,NC]
+</IfModule>
+
+<FilesMatch "(?i)(?:^\.|\.(?:env|ini|log|sql|sh|bak|dist|example)$)">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set X-Frame-Options "DENY"
+</IfModule>

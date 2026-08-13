@@ -1,157 +1,121 @@
 <?php
-session_start();
-require '../db_connect.php';
+declare(strict_types=1);
+require __DIR__ . '/includes/bootstrap.php';
 
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
+require_method('POST');
+$user = require_ability('upload_material');
 
-    if (!isset($_SESSION['user_id'])) {
-        die("Error: User not logged in.");
+$maximumRequest = ((int) app_config('upload.max_files') * (int) app_config('upload.max_bytes')) + (1024 * 1024);
+if ((int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > $maximumRequest) {
+    abort_request(413, 'The upload request is too large.');
+}
+require_csrf();
+
+[$metadata, $metadataErrors] = validate_upload_metadata($_POST);
+if ($metadataErrors !== []) {
+    flash('error', 'Upload validation failed: ' . implode(' ', array_values($metadataErrors)));
+    redirect('upload.php');
+}
+
+if (!validate_academic_relationships($metadata)) {
+    flash('error', 'The selected university, department, course, subject, and semester do not form a valid academic path.');
+    redirect('upload.php');
+}
+
+if (!role_can($user['user_type'], 'moderate_materials')
+    && ((int) $user['university_id'] !== $metadata['university_id']
+        || (int) $user['department_id'] !== $metadata['department_id'])) {
+    abort_request(403, 'Contributors may only upload to their own university and department.');
+}
+
+$files = normalize_uploaded_files($_FILES['files'] ?? []);
+if ($files === []) {
+    flash('error', 'Select at least one file to upload.');
+    redirect('upload.php');
+}
+if (count($files) > (int) app_config('upload.max_files')) {
+    flash('error', 'Choose no more than ' . (int) app_config('upload.max_files') . ' files per upload.');
+    redirect('upload.php');
+}
+
+$successCount = 0;
+$failures = [];
+$uploadGroup = bin2hex(random_bytes(16));
+foreach ($files as $file) {
+    $displayName = sanitize_original_filename($file['name']);
+    [$verified, $validationError] = validate_upload_candidate(
+        $file['name'],
+        $file['tmp_name'],
+        $file['size'],
+        $file['error']
+    );
+    if ($verified === null) {
+        $failures[] = $displayName . ': ' . $validationError;
+        continue;
     }
 
-    $user_id = $_SESSION['user_id'];
-    $title = htmlspecialchars($_POST['title']);
-    $description = htmlspecialchars($_POST['description']);
-    $university_id = (int)$_POST['university_id'];
-    $department_id = (int)$_POST['department'];
-    $course_id = $_POST['course'];
-    $subject_id = $_POST['subject_id'];
-    $semester = (int)$_POST['semester'];
-    
-    // Set the upload directory
-    $target_dir = "uploads/";
-    if (!is_dir($target_dir)) {
-        mkdir($target_dir, 0777, true);
+    $duplicate = db()->prepare('SELECT id FROM materials WHERE user_id = ? AND checksum_sha256 = ? LIMIT 1');
+    $duplicate->bind_param('is', $user['id'], $verified['checksum']);
+    $duplicate->execute();
+    if ($duplicate->get_result()->num_rows > 0) {
+        $failures[] = $displayName . ': this exact file has already been uploaded by your account.';
+        continue;
     }
-    
-    $upload_date = date('Y-m-d H:i:s');
-    $success_count = 0;
-    $error_messages = [];
-    $allowed_extensions = ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt'];
 
-    // Define the maximum file size in bytes (10MB)
-    $max_file_size = 10 * 1024 * 1024; 
-
-    // Generate a unique ID for this entire upload session.
-    $upload_group_id = uniqid('upload_', true);
-
-    // --- Logic to get or create a Course ---
-    if ($course_id === 'new') {
-        $new_course_name = trim($_POST['new_course']);
-        if (empty($new_course_name)) {
-            $error_messages[] = "Error: New course name cannot be empty.";
-        } else {
-            // First, check if the course already exists anywhere in the database.
-            $stmt_check = $conn->prepare("SELECT id FROM courses WHERE name = ?");
-            $stmt_check->bind_param("s", $new_course_name);
-            $stmt_check->execute();
-            $result_check = $stmt_check->get_result();
-            if ($result_check->num_rows > 0) {
-                // If it exists, use its ID.
-                $course_id = $result_check->fetch_assoc()['id'];
-            } else {
-                // If it doesn't exist, create it.
-                $stmt_course = $conn->prepare("INSERT INTO courses (name, department_id, university_id) VALUES (?, ?, ?)");
-                $stmt_course->bind_param("sii", $new_course_name, $department_id, $university_id);
-                if (!$stmt_course->execute()) {
-                    $error_messages[] = "Error creating new course: " . $stmt_course->error;
-                }
-                $course_id = $conn->insert_id;
-                $stmt_course->close();
-            }
-            $stmt_check->close();
+    $storageKey = new_storage_key($verified['extension']);
+    $storedPath = null;
+    try {
+        $storedPath = store_uploaded_file($file['tmp_name'], $storageKey);
+        $visibility = 'authenticated';
+        $status = 'published';
+        $statement = db()->prepare(
+            'INSERT INTO materials
+             (user_id, title, description, type, file_path, original_filename, mime_type, file_size,
+              checksum_sha256, university_id, department_id, course_id, subject_id, semester,
+              upload_group_id, visibility, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $statement->bind_param(
+            'issssssisiiiiisss',
+            $user['id'],
+            $metadata['title'],
+            $metadata['description'],
+            $verified['extension'],
+            $storageKey,
+            $verified['original_name'],
+            $verified['mime_type'],
+            $verified['size'],
+            $verified['checksum'],
+            $metadata['university_id'],
+            $metadata['department_id'],
+            $metadata['course_id'],
+            $metadata['subject_id'],
+            $metadata['semester'],
+            $uploadGroup,
+            $visibility,
+            $status
+        );
+        $statement->execute();
+        $successCount++;
+    } catch (Throwable $exception) {
+        if ($storedPath !== null && is_file($storedPath)) {
+            @unlink($storedPath);
         }
-    }
-
-    // --- Logic to get or create a Subject ---
-    if ($subject_id === 'new') {
-        $new_subject_name = trim($_POST['new_subject']);
-        if (empty($new_subject_name)) {
-            $error_messages[] = "Error: New subject name cannot be empty.";
-        } else {
-            // First, check if the subject already exists.
-            $stmt_check = $conn->prepare("SELECT id FROM subjects WHERE name = ? AND course_id = ?");
-            $stmt_check->bind_param("si", $new_subject_name, $course_id);
-            $stmt_check->execute();
-            $result_check = $stmt_check->get_result();
-
-            if ($result_check->num_rows > 0) {
-                // If it exists, use its ID.
-                $subject_id = $result_check->fetch_assoc()['id'];
-            } else {
-                // If it doesn't exist, create it.
-                $stmt_subject = $conn->prepare("INSERT INTO subjects (name, course_id, department_id) VALUES (?, ?, ?)");
-                $stmt_subject->bind_param("sii", $new_subject_name, $course_id, $department_id);
-                if (!$stmt_subject->execute()) {
-                    $error_messages[] = "Error creating new subject: " . $stmt_subject->error;
-                }
-                $subject_id = $conn->insert_id;
-                $stmt_subject->close();
-            }
-            $stmt_check->close();
-        }
-    }
-
-    // Check if files were uploaded and loop through them
-    if (isset($_FILES['files']) && !empty($_FILES['files']['name'][0])) {
-        $file_count = count($_FILES['files']['name']);
-        
-        for ($i = 0; $i < $file_count && $i < 2; $i++) { // Limit to 2 files
-            $file_name = $_FILES['files']['name'][$i];
-            $file_tmp = $_FILES['files']['tmp_name'][$i];
-            $file_error = $_FILES['files']['error'][$i];
-            $file_size = $_FILES['files']['size'][$i];
-            $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
-
-            if ($file_error !== UPLOAD_ERR_OK) {
-                $error_messages[] = "Error uploading file '{$file_name}': " . $file_error;
-                continue;
-            }
-            
-            // Check file size
-            if ($file_size > $max_file_size) {
-                $error_messages[] = "File '{$file_name}' is too large. Maximum size is 10MB.";
-                continue;
-            }
-
-            if (!in_array($file_ext, $allowed_extensions)) {
-                $error_messages[] = "File '{$file_name}' has an invalid type. Only PDF, DOC, DOCX, PPT, PPTX, XLS, XLSX, TXT are allowed.";
-                continue;
-            }
-
-            $new_file_name = uniqid('material_', true) . '.' . $file_ext;
-            $target_file = $target_dir . $new_file_name;
-
-            if (move_uploaded_file($file_tmp, $target_file)) {
-                $stmt_insert = $conn->prepare("INSERT INTO materials (user_id, title, description, file_path, upload_date, university_id, department_id, course_id, subject_id, semester, upload_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmt_insert->bind_param("issssiisiss", $user_id, $title, $description, $target_file, $upload_date, $university_id, $department_id, $course_id, $subject_id, $semester, $upload_group_id);
-
-                if ($stmt_insert->execute()) {
-                    $success_count++;
-                } else {
-                    $error_messages[] = "Database error for file '{$file_name}': " . $stmt_insert->error;
-                }
-                $stmt_insert->close();
-            } else {
-                $error_messages[] = "Failed to move uploaded file '{$file_name}'. Check directory permissions.";
-            }
-        }
-    } else {
-        $error_messages[] = "Please select at least one file.";
-    }
-
-    $conn->close();
-
-    if ($success_count > 0) {
-        $success_message = "Successfully uploaded {$success_count} file(s).";
-        if (!empty($error_messages)) {
-            $success_message .= " Some files failed: " . implode(" ", $error_messages);
-        }
-        header("Location: upload.php?success=" . urlencode($success_message));
-        exit();
-    } else {
-        $error_message = "All uploads failed: " . implode(" ", $error_messages);
-        header("Location: upload.php?error=" . urlencode($error_message));
-        exit();
+        app_log('error', 'Upload persistence failed', [
+            'user_id' => $user['id'],
+            'type' => $exception::class,
+            'code' => $exception->getCode(),
+        ]);
+        $failures[] = $displayName . ': the server could not save this file.';
     }
 }
-?>
+
+if ($successCount > 0 && $failures === []) {
+    flash('success', "Successfully uploaded {$successCount} file(s).");
+} elseif ($successCount > 0) {
+    flash('success', "Uploaded {$successCount} file(s). " . count($failures) . ' file(s) failed.');
+    flash('error', implode(' ', $failures));
+} else {
+    flash('error', 'No files were uploaded. ' . implode(' ', $failures));
+}
+redirect('upload.php');

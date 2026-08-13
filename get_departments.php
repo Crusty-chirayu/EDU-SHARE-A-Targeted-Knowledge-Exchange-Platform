@@ -1,19 +1,13 @@
 <?php
-header('Content-Type: application/json');
-require '../db_connect.php';
+declare(strict_types=1);
+require __DIR__ . '/includes/bootstrap.php';
+require_method('GET');
 
-$university_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
-
-if ($university_id > 0) {
-    $stmt = $conn->prepare("SELECT id, name FROM departments WHERE university_id = ? ORDER BY name ASC");
-    $stmt->bind_param("i", $university_id);
-    $stmt->execute();
-    $result = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    echo json_encode($result);
-    $stmt->close();
-} else {
-    echo json_encode([]);
+$universityId = positive_int($_GET['id'] ?? null);
+if ($universityId === null) {
+    abort_request(422, 'A valid university ID is required.');
 }
-
-$conn->close();
-?>
+$statement = db()->prepare('SELECT id, name FROM departments WHERE university_id = ? ORDER BY name');
+$statement->bind_param('i', $universityId);
+$statement->execute();
+json_response($statement->get_result()->fetch_all(MYSQLI_ASSOC));

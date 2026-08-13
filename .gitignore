@@ -1,0 +1,30 @@
+# Runtime configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data (uploaded material is private and must not enter Git)
+storage/*
+!storage/.htaccess
+!storage/uploads/
+storage/uploads/*
+!storage/uploads/.gitignore
+!storage/uploads/.htaccess
+logs/
+*.log
+
+# Historical public upload locations
+/uploads/
+/upload/uploads/
+
+# Editor, operating-system, and test artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+.pytest_cache/
+__pycache__/
+.phpunit.result.cache
+coverage/
