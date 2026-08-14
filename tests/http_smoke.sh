@@ -149,7 +149,7 @@ status="$(curl -sS -c "$STUDENT_JAR" -b "$STUDENT_JAR" -o /dev/null -w '%{http_c
     --data-urlencode "_csrf=$csrf" --data-urlencode 'role=student' \
     --data-urlencode 'name=HTTP Synthetic Student' --data-urlencode "email=$STUDENT_EMAIL" \
     --data-urlencode "password=$STUDENT_PASSWORD" --data-urlencode 'university_id=1' \
-    --data-urlencode 'department_id=1' --data-urlencode 'branch=Computer Science' \
+    --data-urlencode 'department_id=1' --data-urlencode 'course_id=1' \
     --data-urlencode 'year=2' "$BASE/register.php")"
 expect_status 303 "$status" 'student registration succeeds'
 curl -sS -c "$STUDENT_JAR" -b "$STUDENT_JAR" "$BASE/login1.php" -o "$TMP/login-student.html"
@@ -206,10 +206,14 @@ expect_status 403 "$status" 'student cannot delete contributor resource'
 status="$(curl -sS -c "$STUDENT_JAR" -b "$STUDENT_JAR" -o /dev/null -w '%{http_code}' "$BASE/download.php?id=$RESOURCE_ID&file_id=$FILE_ID")"
 expect_status 200 "$status" 'authenticated student can download a visible historical resource file'
 
-status="$(curl -sS -o "$TMP/departments.json" -w '%{http_code}' "$BASE/get_departments.php?id=1")"
+status="$(curl -sS -o "$TMP/departments.json" -w '%{http_code}' "$BASE/get_departments.php?university_id=1")"
 expect_status 200 "$status" 'valid dependent selector request succeeds'
-status="$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/get_departments.php?id=invalid")"
+status="$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/get_departments.php?university_id=invalid")"
 expect_status 422 "$status" 'invalid dependent selector ID is rejected'
+status="$(curl -sS -o "$TMP/courses.json" -w '%{http_code}' "$BASE/get_courses.php?department_id=1")"
+expect_status 200 "$status" 'course selector is parent-scoped'
+status="$(curl -sS -o "$TMP/subjects.json" -w '%{http_code}' "$BASE/get_subjects.php?course_id=1&semester=1")"
+expect_status 200 "$status" 'subject selector is course-and-semester-scoped'
 
 # The owner can delete via POST; the row/file are unavailable afterwards.
 csrf="$(csrf_from "$TMP/teacher-dashboard.html")"

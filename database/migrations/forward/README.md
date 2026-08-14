@@ -30,3 +30,15 @@ group relationships remain in place as `review_required` with a reason. Review t
 full model and operator policy in
 [`docs/architecture/resource-model.md`](../../../docs/architecture/resource-model.md)
 before applying it.
+
+## P1.3 migration
+
+`20260814120000_govern_academic_taxonomy.sql` establishes the repository's existing
+university → department → course/program → subject/semester hierarchy as governed
+lineage. It adds retirement state, a canonical nullable user `course_id`, composite
+path constraints for users and normalized resources, an immutable administrator event
+log, and explicit legacy review queues. It never rewrites free-text `users.branch`,
+legacy materials, or resources. Only one exact in-department branch/course match is
+copied; missing, unmatched, ambiguous, and cross-parent values remain review-required.
+Information-schema guards make additive DDL retryable after an implicit DDL commit.
+See [`docs/architecture/academic-taxonomy.md`](../../../docs/architecture/academic-taxonomy.md).

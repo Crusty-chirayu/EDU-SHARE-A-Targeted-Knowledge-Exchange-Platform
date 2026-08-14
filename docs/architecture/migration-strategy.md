@@ -32,8 +32,10 @@
    and operator approval. P1.2 does none of these.
 
 The current phase remains a modular monolith with one database and private object
-store. Search, AI, recommendations, moderation workflows, notifications, collections
-UI, microservices, and orchestration are not part of this sequence.
+store. P1.3 additionally governs the existing university → department → course/program
+→ subject/semester hierarchy; it does not create a speculative parallel Program or
+Branch entity. Search, AI, recommendations, moderation workflows, notifications,
+collections UI, microservices, and orchestration are not part of this sequence.
 
 ## Legacy and route compatibility
 
@@ -88,6 +90,23 @@ otherwise updating only `materials` would make normalized immutable metadata sta
 The detailed entity, relationship, visibility, versioning, storage, duplicate,
 delete/cleanup, and ambiguous-conversion policies are in
 [`resource-model.md`](resource-model.md).
+
+## P1.3 taxonomy strategy
+
+The next checksummed migration,
+`database/migrations/forward/20260814120000_govern_academic_taxonomy.sql`, is additive.
+It adds active/retired lifecycle state, canonical student `course_id`, composite path
+keys/foreign keys, `legacy_user_academic_migrations`, `academic_taxonomy_reviews`, and
+`academic_taxonomy_events`. Existing free-text branches and legacy resource/material
+rows are preserved. Only a unique exact course-name match inside the user's valid
+department is copied; every other student branch outcome remains review-required.
+
+New registrations and resources validate and lock active parentage server-side.
+Selectors are parent-scoped and omit retired records. Administrator mutations are
+CSRF-protected, transactional, fixed-allowlist operations with an event record; there
+is no taxonomy hard-delete operation. See
+[`academic-taxonomy.md`](academic-taxonomy.md) for signedness requirements, ambiguity
+reason codes, operator queries, and rollout details.
 
 ## Recovery and rollback posture
 

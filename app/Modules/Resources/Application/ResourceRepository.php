@@ -10,6 +10,9 @@ interface ResourceRepository
     /** Serializes owner-scoped duplicate checks inside the active transaction. */
     public function lockOwner(int $ownerId): void;
 
+    /** Locks and verifies the complete active academic lineage for a new resource. */
+    public function lockActiveAcademicPath(ResourceMetadata $metadata): bool;
+
     public function commit(): void;
     public function rollback(): void;
 

@@ -40,7 +40,10 @@ function validate_registration_input(array $input): array
         'password' => is_string($input['password'] ?? null) ? $input['password'] : '',
         'university_id' => positive_int($input['university_id'] ?? null),
         'department_id' => positive_int($input['department_id'] ?? null),
-        'branch' => canonical_text($input['branch'] ?? ''),
+        'course_id' => positive_int($input['course_id'] ?? null),
+        // Kept in the value shape only for compatibility with the retained users.branch
+        // column. Public registration never accepts new free-text academic lineage.
+        'branch' => null,
         'year' => positive_int($input['year'] ?? null),
         'contact' => canonical_text($input['contact'] ?? ''),
         'address' => canonical_text($input['address'] ?? ''),
@@ -81,14 +84,14 @@ function validate_registration_input(array $input): array
     }
 
     if ($values['role'] === 'student') {
-        if ($values['branch'] === '' || mb_strlen($values['branch']) > 100 || !valid_taxonomy_name($values['branch'])) {
-            $errors['branch'] = 'Enter a valid branch of at most 100 characters.';
+        if ($values['course_id'] === null) {
+            $errors['course_id'] = 'Choose your course/program from the governed academic taxonomy.';
         }
         if ($values['year'] === null || $values['year'] > 8) {
             $errors['year'] = 'Year of study must be between 1 and 8.';
         }
     } else {
-        $values['branch'] = null;
+        $values['course_id'] = null;
         $values['year'] = null;
     }
 
@@ -130,17 +133,18 @@ function validate_academic_relationships(array $values): bool
 {
     $statement = db()->prepare(
         'SELECT 1
-           FROM departments d
+           FROM universities u
+           JOIN departments d ON d.university_id = u.id
            JOIN courses c ON c.department_id = d.id
            JOIN subjects s ON s.course_id = c.id AND s.department_id = d.id
-          WHERE d.id = ? AND d.university_id = ?
-            AND c.id = ? AND s.id = ? AND s.semester = ?
+          WHERE u.id = ? AND d.id = ? AND c.id = ? AND s.id = ? AND s.semester = ?
+            AND u.is_active = 1 AND d.is_active = 1 AND c.is_active = 1 AND s.is_active = 1
           LIMIT 1'
     );
     $statement->bind_param(
         'iiiii',
-        $values['department_id'],
         $values['university_id'],
+        $values['department_id'],
         $values['course_id'],
         $values['subject_id'],
         $values['semester']
@@ -151,8 +155,94 @@ function validate_academic_relationships(array $values): bool
 
 function validate_department_relationship(int $universityId, int $departmentId): bool
 {
-    $statement = db()->prepare('SELECT 1 FROM departments WHERE id = ? AND university_id = ? LIMIT 1');
+    $statement = db()->prepare(
+        'SELECT 1
+           FROM departments d
+           JOIN universities u ON u.id = d.university_id
+          WHERE d.id = ? AND u.id = ? AND d.is_active = 1 AND u.is_active = 1
+          LIMIT 1'
+    );
     $statement->bind_param('ii', $departmentId, $universityId);
     $statement->execute();
     return $statement->get_result()->num_rows === 1;
+}
+
+function validate_course_relationship(int $departmentId, int $courseId): bool
+{
+    $statement = db()->prepare(
+        'SELECT 1
+           FROM courses c
+           JOIN departments d ON d.id = c.department_id
+           JOIN universities u ON u.id = d.university_id
+          WHERE c.id = ? AND d.id = ?
+            AND c.is_active = 1 AND d.is_active = 1 AND u.is_active = 1
+          LIMIT 1'
+    );
+    $statement->bind_param('ii', $courseId, $departmentId);
+    $statement->execute();
+    return $statement->get_result()->num_rows === 1;
+}
+
+/**
+ * Validate the deepest supplied browse-filter node and every supplied ancestor.
+ * Partial filters are allowed; cross-parent combinations and retired IDs are not.
+ *
+ * @param array{university_id: ?int, department_id: ?int, course_id: ?int, subject_id: ?int, semester: ?int} $filters
+ */
+function validate_academic_filter_relationships(array $filters): bool
+{
+    if ($filters['subject_id'] !== null) {
+        $statement = db()->prepare(
+            'SELECT u.id AS university_id, d.id AS department_id, c.id AS course_id, s.semester
+               FROM subjects s
+               JOIN courses c ON c.id = s.course_id AND c.department_id = s.department_id
+               JOIN departments d ON d.id = c.department_id
+               JOIN universities u ON u.id = d.university_id
+              WHERE s.id = ?
+                AND u.is_active = 1 AND d.is_active = 1 AND c.is_active = 1 AND s.is_active = 1
+              LIMIT 1'
+        );
+        $statement->bind_param('i', $filters['subject_id']);
+    } elseif ($filters['course_id'] !== null) {
+        $statement = db()->prepare(
+            'SELECT u.id AS university_id, d.id AS department_id, c.id AS course_id, NULL AS semester
+               FROM courses c
+               JOIN departments d ON d.id = c.department_id
+               JOIN universities u ON u.id = d.university_id
+              WHERE c.id = ? AND u.is_active = 1 AND d.is_active = 1 AND c.is_active = 1
+              LIMIT 1'
+        );
+        $statement->bind_param('i', $filters['course_id']);
+    } elseif ($filters['department_id'] !== null) {
+        $statement = db()->prepare(
+            'SELECT u.id AS university_id, d.id AS department_id, NULL AS course_id, NULL AS semester
+               FROM departments d
+               JOIN universities u ON u.id = d.university_id
+              WHERE d.id = ? AND u.is_active = 1 AND d.is_active = 1
+              LIMIT 1'
+        );
+        $statement->bind_param('i', $filters['department_id']);
+    } elseif ($filters['university_id'] !== null) {
+        $statement = db()->prepare(
+            'SELECT u.id AS university_id, NULL AS department_id, NULL AS course_id, NULL AS semester
+               FROM universities u WHERE u.id = ? AND u.is_active = 1 LIMIT 1'
+        );
+        $statement->bind_param('i', $filters['university_id']);
+    } else {
+        return true;
+    }
+
+    $statement->execute();
+    $path = $statement->get_result()->fetch_assoc();
+    if ($path === null) {
+        return false;
+    }
+    foreach (['university_id', 'department_id', 'course_id'] as $field) {
+        if ($filters[$field] !== null && (int) $path[$field] !== $filters[$field]) {
+            return false;
+        }
+    }
+    return $filters['semester'] === null
+        || $filters['subject_id'] === null
+        || (int) $path['semester'] === $filters['semester'];
 }

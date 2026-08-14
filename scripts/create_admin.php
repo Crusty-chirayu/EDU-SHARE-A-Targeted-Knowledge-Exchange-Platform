@@ -51,11 +51,37 @@ if ($existing->get_result()->fetch_assoc()) {
 }
 
 $hash = password_hash($password, PASSWORD_DEFAULT);
+if ($hash === false) {
+    fwrite(STDERR, "Password hashing failed; no changes were made.\n");
+    exit(1);
+}
 $role = 'admin';
-$statement = db()->prepare(
-    'INSERT INTO users (full_name, gmail, password, user_type, university_id, department_id)
-     VALUES (?, ?, ?, ?, ?, ?)'
-);
-$statement->bind_param('ssssii', $fullName, $email, $hash, $role, $universityId, $departmentId);
-$statement->execute();
-fwrite(STDOUT, 'Admin account created with ID ' . $statement->insert_id . ". Clear EDUSHARE_BOOTSTRAP_PASSWORD now.\n");
+$connection = db();
+$connection->begin_transaction();
+try {
+    $academic = $connection->prepare(
+        'SELECT d.id FROM universities u
+          JOIN departments d ON d.university_id = u.id
+         WHERE u.id = ? AND d.id = ? AND u.is_active = 1 AND d.is_active = 1
+         FOR UPDATE'
+    );
+    $academic->bind_param('ii', $universityId, $departmentId);
+    $academic->execute();
+    if ($academic->get_result()->num_rows !== 1) {
+        throw new RuntimeException('The selected academic context was retired before account creation.');
+    }
+    $statement = $connection->prepare(
+        'INSERT INTO users (full_name, gmail, password, user_type, university_id, department_id, course_id)
+         VALUES (?, ?, ?, ?, ?, ?, NULL)'
+    );
+    $statement->bind_param('ssssii', $fullName, $email, $hash, $role, $universityId, $departmentId);
+    $statement->execute();
+    $adminId = (int) $connection->insert_id;
+    $connection->commit();
+    fwrite(STDOUT, 'Admin account created with ID ' . $adminId . ". Clear EDUSHARE_BOOTSTRAP_PASSWORD now.\n");
+} catch (Throwable $exception) {
+    $connection->rollback();
+    error_log('Admin bootstrap failed safely [' . $exception::class . ']');
+    fwrite(STDERR, "Admin account creation failed; no changes were made.\n");
+    exit(1);
+}

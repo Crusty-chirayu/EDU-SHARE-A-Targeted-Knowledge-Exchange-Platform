@@ -88,68 +88,79 @@
         return response.json();
     }
 
-    const university = document.querySelector('[data-university-select]');
-    const department = document.querySelector('[data-department-select]');
-    if (university && department) {
-        university.addEventListener('change', async () => {
-            department.replaceChildren(new Option('Loading…', ''));
+    document.querySelectorAll('[data-academic-chain]').forEach((container) => {
+        const university = container.querySelector('[data-university-select]');
+        const department = container.querySelector('[data-department-select]');
+        const course = container.querySelector('[data-course-select]');
+        const subject = container.querySelector('[data-subject-select]');
+        const semester = container.querySelector('[data-semester-select]');
+
+        async function loadDepartments() {
+            if (!university || !department) return;
+            replaceOptions(department, [], university.value ? 'Loading…' : 'Select department');
+            if (course) replaceOptions(course, [], 'Select course/program');
+            if (subject) replaceOptions(subject, [], 'Select course and semester');
+            if (!university.value) return;
             department.disabled = true;
-            if (!university.value) {
-                replaceOptions(department, [], 'Select department');
-                return;
-            }
             try {
-                const items = await fetchOptions(`${department.dataset.endpoint}?id=${encodeURIComponent(university.value)}`);
+                const query = `?university_id=${encodeURIComponent(university.value)}`;
+                const items = await fetchOptions(`${university.dataset.departmentsEndpoint}${query}`);
                 replaceOptions(department, items, 'Select department');
             } catch (error) {
                 replaceOptions(department, [], 'Unable to load departments');
                 showStatus(error.message, true);
             }
-        });
-    }
-
-    const uploadDepartment = document.querySelector('[data-upload-department]');
-    const course = document.querySelector('[data-course-select]');
-    const subject = document.querySelector('[data-subject-select]');
-    const semester = document.querySelector('[data-semester-select]');
-
-    async function loadCourses() {
-        if (!uploadDepartment || !course || !subject) return;
-        replaceOptions(subject, [], 'Select subject');
-        if (!uploadDepartment.value) {
-            replaceOptions(course, [], 'Select course');
-            return;
         }
-        course.disabled = true;
-        try {
-            const items = await fetchOptions(`${course.dataset.endpoint}?id=${encodeURIComponent(uploadDepartment.value)}`);
-            replaceOptions(course, items, 'Select course');
-        } catch (error) {
-            replaceOptions(course, [], 'Unable to load courses');
-            showStatus(error.message, true);
-        }
-    }
 
-    async function loadSubjects() {
-        if (!course || !subject || !semester) return;
-        if (!course.value || !semester.value) {
-            replaceOptions(subject, [], 'Select course and semester');
-            return;
+        async function loadCourses() {
+            if (!department || !course) return;
+            replaceOptions(course, [], department.value ? 'Loading…' : 'Select course/program');
+            if (subject) replaceOptions(subject, [], 'Select course and semester');
+            if (!department.value) return;
+            course.disabled = true;
+            try {
+                const query = `?department_id=${encodeURIComponent(department.value)}`;
+                const items = await fetchOptions(`${department.dataset.coursesEndpoint}${query}`);
+                replaceOptions(course, items, 'Select course/program');
+            } catch (error) {
+                replaceOptions(course, [], 'Unable to load courses');
+                showStatus(error.message, true);
+            }
         }
-        subject.disabled = true;
-        try {
-            const query = `?id=${encodeURIComponent(course.value)}&semester=${encodeURIComponent(semester.value)}`;
-            const items = await fetchOptions(`${subject.dataset.endpoint}${query}`);
-            replaceOptions(subject, items, 'Select subject');
-        } catch (error) {
-            replaceOptions(subject, [], 'Unable to load subjects');
-            showStatus(error.message, true);
-        }
-    }
 
-    uploadDepartment?.addEventListener('change', loadCourses);
-    course?.addEventListener('change', loadSubjects);
-    semester?.addEventListener('change', loadSubjects);
+        async function loadSubjects() {
+            if (!course || !subject || !semester) return;
+            if (!course.value || !semester.value) {
+                replaceOptions(subject, [], 'Select course and semester');
+                return;
+            }
+            subject.disabled = true;
+            try {
+                const query = `?course_id=${encodeURIComponent(course.value)}&semester=${encodeURIComponent(semester.value)}`;
+                const items = await fetchOptions(`${course.dataset.subjectsEndpoint}${query}`);
+                replaceOptions(subject, items, 'Select subject');
+            } catch (error) {
+                replaceOptions(subject, [], 'Unable to load subjects');
+                showStatus(error.message, true);
+            }
+        }
+
+        university?.addEventListener('change', loadDepartments);
+        department?.addEventListener('change', loadCourses);
+        course?.addEventListener('change', loadSubjects);
+        semester?.addEventListener('change', loadSubjects);
+
+        const role = container.querySelector('#role');
+        const year = container.querySelector('#year');
+        function updateStudentRequirements() {
+            if (!role) return;
+            const student = role.value === 'student';
+            if (course) course.required = student;
+            if (year) year.required = student;
+        }
+        role?.addEventListener('change', updateStudentRequirements);
+        updateStudentRequirements();
+    });
 
     const files = document.querySelector('[data-upload-files]');
     files?.addEventListener('change', () => {

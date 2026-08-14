@@ -2,7 +2,7 @@
 
 ## Supported scope
 
-This repository supports the Phase 0 frameworkless PHP security foundation plus the additive P1.1 modular-monolith boundary documented in `docs/architecture/`. Security fixes must preserve both legacy routes and the versioned modular route. P1.2 Resource/ResourceFile normalization and framework migration remain out of scope for this checkpoint.
+This repository supports the Phase 0 frameworkless PHP security foundation, the additive P1.1 modular-monolith boundary, P1.2 normalized resources/files, and P1.3 governed academic taxonomy documented in `docs/architecture/`. Security fixes must preserve legacy routes, the versioned modular route, resource ownership/visibility, and admin-only taxonomy governance. Framework migration and P1.4 features remain out of scope for this checkpoint.
 
 ## Reporting a vulnerability
 
@@ -33,7 +33,9 @@ Before production use:
 - [ ] Run PHP lint, static tests, `tests/architecture.php`, integration tests, and HTTP smoke tests against a disposable database.
 - [ ] Inspect `php scripts/migrate.php status`, back up/restore-test the database, and run only reviewed forward migrations as a temporary schema-owner account.
 - [ ] Verify student, teacher, moderator, and admin positive/negative authorization paths with synthetic accounts.
-- [ ] Verify private/authenticated/public material visibility and owner/moderator/admin deletion behavior.
+- [ ] Verify normal users cannot mutate taxonomy; test CSRF, retired-parent, active-child retirement, audit-event, malformed-ID, and cross-parent denial paths.
+- [ ] Inspect `legacy_user_academic_migrations` and open `academic_taxonomy_reviews`; never resolve ambiguous branch/course lineage by guessing.
+- [ ] Verify private/authenticated/public resource visibility and owner/moderator/admin deletion behavior.
 - [ ] Schedule database, private-file, and log backups; test a complete restore, including checksums.
 - [ ] Protect and rotate logs; schedule cleanup of old `login_attempts` rows.
 - [ ] Configure monitoring for repeated 401/403/419/429 responses, upload failures, missing storage objects, and database errors without logging raw secrets or request bodies.
@@ -42,7 +44,8 @@ Before production use:
 
 - Public registration is limited to students and teachers/contributors.
 - State changes require POST and centralized CSRF validation.
-- Files are addressed externally by material ID and internally by random opaque keys.
+- Files are addressed externally by stable resource/file IDs and internally by random opaque keys.
+- Taxonomy writes are admin-only, CSRF-protected, parent-locked, non-destructive, and audited; browser selectors are never treated as authorization or relationship validation.
 - Authorization is checked before storage resolution or streaming.
 - Profile pages expose affiliation and role but not contact details.
 - Error responses do not contain SQL, paths, stack traces, credentials, or raw exception messages.

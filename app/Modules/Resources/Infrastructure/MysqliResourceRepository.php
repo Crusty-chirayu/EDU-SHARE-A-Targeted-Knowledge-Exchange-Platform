@@ -30,6 +30,28 @@ final class MysqliResourceRepository implements ResourceRepository
         }
     }
 
+    public function lockActiveAcademicPath(ResourceMetadata $metadata): bool
+    {
+        $statement = $this->connection->prepare(
+            'SELECT s.id
+               FROM universities u
+               JOIN departments d ON d.university_id = u.id
+               JOIN courses c ON c.department_id = d.id
+               JOIN subjects s ON s.course_id = c.id AND s.department_id = d.id
+              WHERE u.id = ? AND d.id = ? AND c.id = ? AND s.id = ? AND s.semester = ?
+                AND u.is_active = 1 AND d.is_active = 1 AND c.is_active = 1 AND s.is_active = 1
+              FOR UPDATE'
+        );
+        $universityId = $metadata->universityId;
+        $departmentId = $metadata->departmentId;
+        $courseId = $metadata->courseId;
+        $subjectId = $metadata->subjectId;
+        $semester = $metadata->semester;
+        $statement->bind_param('iiiii', $universityId, $departmentId, $courseId, $subjectId, $semester);
+        $statement->execute();
+        return $statement->get_result()->num_rows === 1;
+    }
+
     public function commit(): void
     {
         $this->connection->commit();

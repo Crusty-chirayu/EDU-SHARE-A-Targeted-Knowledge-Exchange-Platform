@@ -1,12 +1,16 @@
--- EDU-SHARE P1.2 canonical schema (MariaDB 10.4+ / MySQL 8 compatible)
+-- EDU-SHARE P1.3 canonical schema (MariaDB 10.4+ / MySQL 8 compatible)
 -- This file intentionally contains no user accounts, password hashes, uploaded resources, or PII.
--- The legacy material tables remain empty on fresh installs so upgraded deployments can
--- preserve and audit their source rows without making them the active application model.
+-- University -> department -> course -> subject/semester is the governed academic hierarchy.
+-- "Course" preserves the repository's established program/branch semantics; no speculative
+-- parallel Program or Branch entity is introduced. Legacy free-text branch values remain audit data.
 SET NAMES utf8mb4;
 SET time_zone = '+00:00';
 SET FOREIGN_KEY_CHECKS = 0;
 
 DROP TABLE IF EXISTS login_attempts;
+DROP TABLE IF EXISTS academic_taxonomy_events;
+DROP TABLE IF EXISTS academic_taxonomy_reviews;
+DROP TABLE IF EXISTS legacy_user_academic_migrations;
 DROP TABLE IF EXISTS legacy_favorite_migrations;
 DROP TABLE IF EXISTS legacy_material_migrations;
 DROP TABLE IF EXISTS resource_favorites;
@@ -27,29 +31,42 @@ SET FOREIGN_KEY_CHECKS = 1;
 CREATE TABLE universities (
     id INT UNSIGNED NOT NULL AUTO_INCREMENT,
     name VARCHAR(150) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY universities_name_unique (name)
+    UNIQUE KEY universities_name_unique (name),
+    CONSTRAINT universities_active_check CHECK (is_active IN (0, 1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE departments (
     id INT UNSIGNED NOT NULL AUTO_INCREMENT,
     university_id INT UNSIGNED NOT NULL,
     name VARCHAR(150) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY departments_university_name_unique (university_id, name),
-    CONSTRAINT departments_university_fk FOREIGN KEY (university_id) REFERENCES universities (id) ON DELETE RESTRICT
+    UNIQUE KEY departments_id_university_unique (id, university_id),
+    KEY departments_active_parent_idx (university_id, is_active, name),
+    CONSTRAINT departments_university_fk FOREIGN KEY (university_id) REFERENCES universities (id) ON DELETE RESTRICT,
+    CONSTRAINT departments_active_check CHECK (is_active IN (0, 1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE courses (
     id INT UNSIGNED NOT NULL AUTO_INCREMENT,
     department_id INT UNSIGNED NOT NULL,
     name VARCHAR(150) NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY courses_department_name_unique (department_id, name),
-    CONSTRAINT courses_department_fk FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE RESTRICT
+    UNIQUE KEY courses_id_department_unique (id, department_id),
+    KEY courses_active_parent_idx (department_id, is_active, name),
+    CONSTRAINT courses_department_fk FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE RESTRICT,
+    CONSTRAINT courses_active_check CHECK (is_active IN (0, 1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE subjects (
@@ -58,13 +75,19 @@ CREATE TABLE subjects (
     course_id INT UNSIGNED NOT NULL,
     department_id INT UNSIGNED NOT NULL,
     semester TINYINT UNSIGNED NOT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY subjects_course_semester_name_unique (course_id, semester, name),
+    UNIQUE KEY subjects_complete_path_unique (id, course_id, department_id, semester),
+    KEY subjects_active_parent_idx (course_id, semester, is_active, name),
     KEY subjects_department_idx (department_id),
     CONSTRAINT subjects_course_fk FOREIGN KEY (course_id) REFERENCES courses (id) ON DELETE RESTRICT,
     CONSTRAINT subjects_department_fk FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE RESTRICT,
-    CONSTRAINT subjects_semester_check CHECK (semester BETWEEN 1 AND 12)
+    CONSTRAINT subjects_course_department_fk FOREIGN KEY (course_id, department_id) REFERENCES courses (id, department_id) ON DELETE RESTRICT,
+    CONSTRAINT subjects_semester_check CHECK (semester BETWEEN 1 AND 12),
+    CONSTRAINT subjects_active_check CHECK (is_active IN (0, 1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE users (
@@ -75,8 +98,9 @@ CREATE TABLE users (
     user_type ENUM('student', 'teacher', 'moderator', 'admin') NOT NULL DEFAULT 'student',
     university_id INT UNSIGNED NOT NULL,
     department_id INT UNSIGNED NOT NULL,
+    course_id INT UNSIGNED DEFAULT NULL,
     roll_number VARCHAR(50) DEFAULT NULL,
-    branch VARCHAR(100) DEFAULT NULL,
+    branch VARCHAR(100) DEFAULT NULL COMMENT 'Preserved legacy free-text branch; new student context uses course_id',
     year TINYINT UNSIGNED DEFAULT NULL,
     contact VARCHAR(20) DEFAULT NULL,
     address VARCHAR(255) DEFAULT NULL,
@@ -87,9 +111,59 @@ CREATE TABLE users (
     UNIQUE KEY users_roll_number_unique (roll_number),
     KEY users_university_idx (university_id),
     KEY users_department_idx (department_id),
+    KEY users_course_idx (course_id),
+    KEY users_department_university_idx (department_id, university_id),
+    KEY users_course_department_idx (course_id, department_id),
     CONSTRAINT users_university_fk FOREIGN KEY (university_id) REFERENCES universities (id) ON DELETE RESTRICT,
     CONSTRAINT users_department_fk FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE RESTRICT,
+    CONSTRAINT users_course_fk FOREIGN KEY (course_id) REFERENCES courses (id) ON DELETE RESTRICT,
+    CONSTRAINT users_department_university_fk FOREIGN KEY (department_id, university_id) REFERENCES departments (id, university_id) ON DELETE RESTRICT,
+    CONSTRAINT users_course_department_fk FOREIGN KEY (course_id, department_id) REFERENCES courses (id, department_id) ON DELETE RESTRICT,
     CONSTRAINT users_year_check CHECK (year IS NULL OR year BETWEEN 1 AND 8)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE legacy_user_academic_migrations (
+    user_id INT UNSIGNED NOT NULL,
+    legacy_branch VARCHAR(100) NULL,
+    proposed_course_id INT UNSIGNED NULL,
+    migration_status ENUM('not_applicable', 'eligible', 'migrated', 'review_required') NOT NULL,
+    reason_code VARCHAR(80) NULL,
+    assessed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    migrated_at TIMESTAMP NULL DEFAULT NULL,
+    PRIMARY KEY (user_id),
+    KEY legacy_user_academic_migrations_course_idx (proposed_course_id),
+    KEY legacy_user_academic_migrations_status_idx (migration_status, reason_code),
+    CONSTRAINT legacy_user_academic_migrations_user_fk FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE RESTRICT,
+    CONSTRAINT legacy_user_academic_migrations_course_fk FOREIGN KEY (proposed_course_id) REFERENCES courses (id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE academic_taxonomy_reviews (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    entity_type ENUM('university', 'department', 'course', 'subject', 'user', 'material', 'resource') NOT NULL,
+    entity_id INT UNSIGNED NOT NULL,
+    reason_code VARCHAR(80) NOT NULL,
+    legacy_value VARCHAR(500) NULL,
+    review_status ENUM('open', 'resolved') NOT NULL DEFAULT 'open',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP NULL DEFAULT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY academic_taxonomy_reviews_reason_unique (entity_type, entity_id, reason_code),
+    KEY academic_taxonomy_reviews_queue_idx (review_status, entity_type, reason_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE academic_taxonomy_events (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    actor_id INT UNSIGNED NOT NULL,
+    entity_type ENUM('university', 'department', 'course', 'subject') NOT NULL,
+    entity_id INT UNSIGNED NOT NULL,
+    action ENUM('created', 'renamed', 'activated', 'retired') NOT NULL,
+    before_name VARCHAR(150) NULL,
+    after_name VARCHAR(150) NULL,
+    occurred_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY academic_taxonomy_events_entity_idx (entity_type, entity_id, occurred_at),
+    KEY academic_taxonomy_events_actor_idx (actor_id, occurred_at),
+    CONSTRAINT academic_taxonomy_events_actor_fk FOREIGN KEY (actor_id) REFERENCES users (id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE materials (
@@ -117,12 +191,18 @@ CREATE TABLE materials (
     UNIQUE KEY materials_storage_key_unique (file_path),
     KEY materials_owner_checksum_idx (user_id, checksum_sha256),
     KEY materials_discovery_idx (university_id, department_id, course_id, subject_id, semester, status),
+    KEY materials_department_university_idx (department_id, university_id),
+    KEY materials_course_department_idx (course_id, department_id),
+    KEY materials_subject_path_idx (subject_id, course_id, department_id, semester),
     KEY materials_upload_date_idx (upload_date),
     CONSTRAINT materials_user_fk FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE RESTRICT,
     CONSTRAINT materials_university_fk FOREIGN KEY (university_id) REFERENCES universities (id) ON DELETE RESTRICT,
     CONSTRAINT materials_department_fk FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE RESTRICT,
     CONSTRAINT materials_course_fk FOREIGN KEY (course_id) REFERENCES courses (id) ON DELETE RESTRICT,
     CONSTRAINT materials_subject_fk FOREIGN KEY (subject_id) REFERENCES subjects (id) ON DELETE RESTRICT,
+    CONSTRAINT materials_department_university_fk FOREIGN KEY (department_id, university_id) REFERENCES departments (id, university_id) ON DELETE RESTRICT,
+    CONSTRAINT materials_course_department_fk FOREIGN KEY (course_id, department_id) REFERENCES courses (id, department_id) ON DELETE RESTRICT,
+    CONSTRAINT materials_subject_path_fk FOREIGN KEY (subject_id, course_id, department_id, semester) REFERENCES subjects (id, course_id, department_id, semester) ON DELETE RESTRICT,
     CONSTRAINT materials_semester_check CHECK (semester BETWEEN 1 AND 12)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -163,12 +243,18 @@ CREATE TABLE resources (
     PRIMARY KEY (id),
     KEY resources_owner_updated_idx (owner_id, updated_at),
     KEY resources_academic_discovery_idx (university_id, department_id, course_id, subject_id, semester),
+    KEY resources_department_university_idx (department_id, university_id),
+    KEY resources_course_department_idx (course_id, department_id),
+    KEY resources_subject_path_idx (subject_id, course_id, department_id, semester),
     KEY resources_visibility_status_idx (visibility, publication_status, moderation_status, deletion_status, updated_at),
     CONSTRAINT resources_owner_fk FOREIGN KEY (owner_id) REFERENCES users (id) ON DELETE RESTRICT,
     CONSTRAINT resources_university_fk FOREIGN KEY (university_id) REFERENCES universities (id) ON DELETE RESTRICT,
     CONSTRAINT resources_department_fk FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE RESTRICT,
     CONSTRAINT resources_course_fk FOREIGN KEY (course_id) REFERENCES courses (id) ON DELETE RESTRICT,
     CONSTRAINT resources_subject_fk FOREIGN KEY (subject_id) REFERENCES subjects (id) ON DELETE RESTRICT,
+    CONSTRAINT resources_department_university_fk FOREIGN KEY (department_id, university_id) REFERENCES departments (id, university_id) ON DELETE RESTRICT,
+    CONSTRAINT resources_course_department_fk FOREIGN KEY (course_id, department_id) REFERENCES courses (id, department_id) ON DELETE RESTRICT,
+    CONSTRAINT resources_subject_path_fk FOREIGN KEY (subject_id, course_id, department_id, semester) REFERENCES subjects (id, course_id, department_id, semester) ON DELETE RESTRICT,
     CONSTRAINT resources_semester_check CHECK (semester BETWEEN 1 AND 12),
     CONSTRAINT resources_current_version_check CHECK (current_version_number >= 1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

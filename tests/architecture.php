@@ -65,6 +65,8 @@ final class ArchitectureResourceRepository implements ResourceRepository
     public array $checksumResourceIds = [];
     public int $currentVersionAdvances = 0;
     public int $ownerLocks = 0;
+    public bool $academicPathActive = true;
+    public int $academicPathLocks = 0;
     private int $fileInsertCalls = 0;
     private int $nextResourceId = 40;
     private int $nextVersionId = 80;
@@ -92,6 +94,12 @@ final class ArchitectureResourceRepository implements ResourceRepository
             throw new RuntimeException('Synthetic resource owner is invalid.');
         }
         $this->ownerLocks++;
+    }
+
+    public function lockActiveAcademicPath(ResourceMetadata $metadata): bool
+    {
+        $this->academicPathLocks++;
+        return $this->academicPathActive;
     }
 
     public function commit(): void
@@ -494,6 +502,22 @@ $thirdFile = new VerifiedResourceFile(
 );
 $metadata = new ResourceMetadata('Architecture notes', null, 1, 1, 1, 1, 1, 'private');
 
+$inactiveAcademicRepository = new ArchitectureResourceRepository();
+$inactiveAcademicRepository->academicPathActive = false;
+$inactiveAcademicStorage = new ArchitectureResourceStorage();
+try {
+    (new CreateResource($inactiveAcademicRepository, $inactiveAcademicStorage, 5, 1024 * 1024))
+        ->execute(7, $metadata, [$firstFile]);
+    architecture_check(false, 'resource creation rejects a retired or cross-parent academic path');
+} catch (InvalidArgumentException) {
+    architecture_check(
+        $inactiveAcademicRepository->academicPathLocks === 1
+            && $inactiveAcademicRepository->resource === null
+            && $inactiveAcademicStorage->objects === [],
+        'resource creation rejects a retired or cross-parent academic path'
+    );
+}
+
 $compensationRepository = new ArchitectureResourceRepository();
 $compensationRepository->failFileInsertAt = 2;
 $compensationStorage = new ArchitectureResourceStorage();
@@ -566,8 +590,9 @@ architecture_check(
         && count($createdResource->fileIds) === 2
         && $resourceRepository->resource['current_version_number'] === 1
         && $resourceRepository->currentVersionAdvances === 0
-        && $resourceRepository->ownerLocks === 1,
-    'resource service locks owner-scoped duplicate checks and creates one atomic initial version'
+        && $resourceRepository->ownerLocks === 1
+        && $resourceRepository->academicPathLocks === 1,
+    'resource service locks owner and active academic path before one atomic initial version'
 );
 $addVersionService = new AddResourceVersion(
     $resourceRepository,

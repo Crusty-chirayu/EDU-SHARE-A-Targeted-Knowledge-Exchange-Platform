@@ -23,7 +23,7 @@ function auth_user(): ?array
     }
 
     $statement = db()->prepare(
-        'SELECT id, full_name, gmail, user_type, university_id, department_id, branch, year, contact, address
+        'SELECT id, full_name, gmail, user_type, university_id, department_id, course_id, branch, year, contact, address
          FROM users WHERE id = ? LIMIT 1'
     );
     $statement->bind_param('i', $userId);

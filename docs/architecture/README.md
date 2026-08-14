@@ -2,13 +2,15 @@
 
 P1.1 introduced a controlled migration boundary around the secure Phase 0
 application. It is an **incremental, frameworkless modular monolith**, not a rewrite.
-P1.2 uses those boundaries for the normalized Resource/Version/File aggregate while
-retaining compatible root PHP entry points and all Phase 0 security controls.
+P1.2 uses those boundaries for the normalized Resource/Version/File aggregate, and
+P1.3 establishes governed academic lineage, while retaining compatible root PHP entry
+points and all Phase 0 security controls.
 
 Architecture records:
 
 - [ADR-001: incremental modular monolith](ADR-001-incremental-modular-monolith.md)
 - [P1.2 normalized resource and file model](resource-model.md)
+- [P1.3 governed academic taxonomy](academic-taxonomy.md)
 - [Bounded modules and dependency rules](modules.md)
 - [Actual-file migration map](migration-map.md)
 - [Compatibility, database, rollout, and test strategy](migration-strategy.md)

@@ -63,8 +63,12 @@ class StaticSecurityTests(unittest.TestCase):
             self.assertIn("request_method() === 'POST'", source)
             self.assertIn("require_csrf()", source)
             self.assertIn("csrf_field()", source)
-        self.assertNotRegex(read("register.php"), r"option\s+value=[\"'](?:admin|moderator)")
+        registration = read("register.php")
+        self.assertNotRegex(registration, r"option\s+value=[\"'](?:admin|moderator)")
+        self.assertIn('name="course_id"', registration)
+        self.assertNotIn('name="branch"', registration)
         self.assertIn("['student', 'teacher']", read("includes/services.php"))
+        self.assertIn("course_id, branch, year", read("includes/services.php"))
 
     def test_role_matrix_is_centralized_and_fail_closed(self) -> None:
         source = read("includes/auth.php")
@@ -313,7 +317,13 @@ class StaticSecurityTests(unittest.TestCase):
         self.assertIn("DELETE\\s+FROM", runner)
         self.assertNotIn("002_p0_finalize.sql", read("scripts/migrate.php"))
         migration_files = sorted((ROOT / "database/migrations/forward").glob("*.sql"))
-        self.assertEqual(["20260813120000_normalize_resources.sql"], [path.name for path in migration_files])
+        self.assertEqual(
+            [
+                "20260813120000_normalize_resources.sql",
+                "20260814120000_govern_academic_taxonomy.sql",
+            ],
+            [path.name for path in migration_files],
+        )
         for path in migration_files:
             self.assertRegex(path.name, r"^\d{14}_[a-z0-9_]+\.sql$")
             sql = path.read_text(encoding="utf-8")
@@ -349,6 +359,122 @@ class StaticSecurityTests(unittest.TestCase):
         self.assertIn("ON DUPLICATE KEY UPDATE\n    resource_favorite_id = VALUES(resource_favorite_id)", migration)
         self.assertNotRegex(migration, r"(?i)\b(?:DROP|TRUNCATE)\s+(?:TABLE\s+)?materials\b")
         self.assertNotRegex(migration, r"(?i)\bDELETE\s+FROM\s+(?:materials|material_favorites)\b")
+
+    def test_governed_taxonomy_schema_enforces_complete_academic_paths(self) -> None:
+        schema = read("database/schema.sql")
+        for table in ("universities", "departments", "courses", "subjects"):
+            block = schema.split(f"CREATE TABLE {table} (", 1)[1].split(
+                ") ENGINE=InnoDB", 1
+            )[0]
+            self.assertIn("is_active TINYINT(1) NOT NULL DEFAULT 1", block, table)
+        self.assertIn("course_id INT UNSIGNED DEFAULT NULL", schema)
+        for marker in (
+            "departments_id_university_unique (id, university_id)",
+            "courses_id_department_unique (id, department_id)",
+            "subjects_complete_path_unique (id, course_id, department_id, semester)",
+            "users_department_university_fk FOREIGN KEY (department_id, university_id)",
+            "users_course_department_fk FOREIGN KEY (course_id, department_id)",
+            "resources_department_university_fk FOREIGN KEY (department_id, university_id)",
+            "resources_course_department_fk FOREIGN KEY (course_id, department_id)",
+            "resources_subject_path_fk FOREIGN KEY (subject_id, course_id, department_id, semester)",
+        ):
+            self.assertIn(marker, schema)
+        for table in (
+            "legacy_user_academic_migrations",
+            "academic_taxonomy_reviews",
+            "academic_taxonomy_events",
+        ):
+            self.assertIn(f"CREATE TABLE {table}", schema)
+        # MySQL/MariaDB requires signedness to match across each FK column pair.
+        for identifier in (
+            "university_id", "department_id", "course_id", "subject_id",
+        ):
+            declarations = re.findall(rf"(?m)^\s*{identifier}\s+([^,\n]+)", schema)
+            self.assertTrue(declarations, identifier)
+            self.assertTrue(
+                all("INT UNSIGNED" in declaration for declaration in declarations),
+                f"{identifier}: {declarations}",
+            )
+
+    def test_taxonomy_migration_is_additive_audited_and_never_guesses(self) -> None:
+        migration = read(
+            "database/migrations/forward/20260814120000_govern_academic_taxonomy.sql"
+        )
+        for marker in (
+            "legacy_user_academic_migrations",
+            "academic_taxonomy_reviews",
+            "academic_taxonomy_events",
+            "legacy_branch_no_exact_course",
+            "legacy_branch_ambiguous",
+            "subject_course_department_mismatch",
+            "legacy_material_academic_path_invalid",
+            "resource_academic_path_invalid",
+            "BINARY LOWER(TRIM(candidate.name)) = BINARY LOWER(TRIM(u.branch))",
+            "information_schema.COLUMNS",
+            "information_schema.STATISTICS",
+            "information_schema.TABLE_CONSTRAINTS",
+        ):
+            self.assertIn(marker, migration)
+        statements = re.sub(r"/\*.*?\*/|--[^\r\n]*", "", migration, flags=re.DOTALL)
+        self.assertNotRegex(
+            statements,
+            r"(?i)\b(?:DROP|TRUNCATE)\b|\bDELETE\s+FROM\b|FOREIGN_KEY_CHECKS",
+        )
+        self.assertNotRegex(migration, r"(?i)UPDATE\s+(?:materials|resources)\b")
+        self.assertNotIn("UPDATE courses SET", migration)
+        self.assertNotIn("UPDATE subjects SET", migration)
+
+    def test_taxonomy_writes_are_admin_only_audited_and_non_destructive(self) -> None:
+        admin = read("admin.php")
+        self.assertIn("require_ability('manage_academics')", admin)
+        self.assertIn("require_csrf()", admin)
+        self.assertIn("academic_taxonomy_events", admin)
+        self.assertIn("begin_transaction()", admin)
+        self.assertIn("FOR UPDATE", admin)
+        self.assertIn("is_active", admin)
+        self.assertIn("Retire active child records first", admin)
+        self.assertNotRegex(
+            admin,
+            r"(?i)DELETE\s+FROM\s+(?:universities|departments|courses|subjects)",
+        )
+        self.assertNotIn("action\" value=\"delete", admin)
+
+    def test_dependent_selectors_and_writes_validate_active_parentage(self) -> None:
+        selector_contracts = {
+            "get_departments.php": ("university_id", "u.is_active = 1", "d.is_active = 1"),
+            "get_courses.php": ("department_id", "d.is_active = 1", "c.is_active = 1"),
+            "get_subjects.php": ("course_id", "c.is_active = 1", "s.is_active = 1"),
+        }
+        for path, markers in selector_contracts.items():
+            source = read(path)
+            self.assertIn("require_method('GET')", source)
+            self.assertIn("->prepare(", source)
+            for marker in markers:
+                self.assertIn(marker, source, path)
+        javascript = read("assets/app.js")
+        for parameter in ("university_id=", "department_id=", "course_id=", "semester="):
+            self.assertIn(parameter, javascript)
+        validation = read("includes/validation.php")
+        for marker in (
+            "validate_academic_relationships",
+            "validate_course_relationship",
+            "validate_academic_filter_relationships",
+            "u.is_active = 1",
+            "d.is_active = 1",
+            "c.is_active = 1",
+            "s.is_active = 1",
+        ):
+            self.assertIn(marker, validation)
+        repository = read(
+            "app/Modules/Resources/Infrastructure/MysqliResourceRepository.php"
+        )
+        self.assertIn("lockActiveAcademicPath", repository)
+        self.assertIn("FOR UPDATE", repository)
+        create = read("app/Modules/Resources/Application/CreateResource.php")
+        self.assertLess(
+            create.index("->lockActiveAcademicPath("),
+            create.index("->assertFileSet("),
+        )
 
     def test_shared_view_foundations_escape_content_and_protect_post_forms(self) -> None:
         layout = read("includes/layout.php")

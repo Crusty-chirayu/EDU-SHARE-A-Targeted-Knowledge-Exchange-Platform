@@ -1,7 +1,7 @@
 # Actual-file current-to-target responsibility map
 
 This map began from the actual Phase 0 checkout, not an assumed framework layout, and
-now records the implemented P1.1/P1.2 boundaries. “Later” still requires separate
+now records the implemented P1.1/P1.2/P1.3 boundaries. “Later” still requires separate
 scope authorization and parity tests. Legacy route names/source tables stay present
 until deprecation, retention, data verification, and rollback requirements are met.
 
@@ -23,7 +23,7 @@ until deprecation, retention, data verification, and rollback requirements are m
 | `app/Shared/Kernel/Kernel.php`, `app/Shared/Kernel/ApplicationFactory.php` | `includes/bootstrap.php` plus per-file construction | Safe exception boundary and explicit composition root; legacy functions remain adapters | P1.1 implemented |
 | `app/Shared/Persistence/MigrationPlanItem.php`, `app/Shared/Persistence/MigrationRunner.php` | Manual SQL files only | Checksummed forward migration ledger, lock, explicit apply, destructive-token guard | P1.1 implemented |
 | `scripts/migrate.php` | Not present in Phase 0 | CLI-only status/apply entry point for new forward stream | P1.1 implemented |
-| `database/migrations/forward/README.md`, `database/migrations/forward/20260813120000_normalize_resources.sql` | Not present in Phase 0 | Append-only migration policy plus the additive normalized schema/data conversion | P1.2 migration added through the P1.1 checksummed runner |
+| `database/migrations/forward/README.md`, `database/migrations/forward/*.sql` | Not present in Phase 0 | Append-only migration policy, P1.2 resource conversion, and P1.3 governed-taxonomy migration/review queues | P1.2/P1.3 migrations through the P1.1 checksummed runner |
 | `app/Modules/IdentityAccess/Domain/CurrentUser.php` | Session user array crosses all layers | Privacy-minimized authenticated identity value | P1.1 implemented |
 | `app/Modules/IdentityAccess/Application/CurrentUserProvider.php`, `app/Modules/IdentityAccess/Application/AuthorizationGate.php` | Controllers call auth globals | Stable identity/capability ports | P1.1 implemented |
 | `app/Modules/IdentityAccess/Infrastructure/LegacySessionUserProvider.php`, `app/Modules/IdentityAccess/Infrastructure/LegacyAuthorizationGate.php` | `auth_user()` and `role_can()` globals | Temporary adapters preserving Phase 0 session and fail-closed role semantics | P1.1 implemented |
@@ -47,9 +47,9 @@ until deprecation, retention, data verification, and rollback requirements are m
 | `index.php` | Public landing page | Shared UI/public page controller/view; no module command | Later page slice; preserve |
 | `mainhome.php` | Permanent legacy landing redirect | Compatibility redirect to canonical landing route | Preserve until external-traffic deprecation evidence |
 | `login1.php`, `logout.php` | Sign-in/sign-out HTML handlers | Identity & Access controllers, validators, CSRF/session services and views | Later Identity slices; preserve |
-| `register.php` | Public student/teacher registration | Identity account command coordinated with Profiles/Taxonomy ports; privileged roles still rejected | Later Identity slice; preserve |
-| `admin.php` | Taxonomy CRUD HTML route | Academic Taxonomy admin controllers/services/repositories/views with `manage_academics` middleware | Later Taxonomy slices; preserve |
-| `get_universities.php`, `get_departments.php`, `get_courses.php`, `get_subjects.php` | Public dependent-selector JSON | Academic Taxonomy read controllers/services/repositories | Later small read slices; preserve contracts |
+| `register.php` | Public student/teacher registration | Identity account command with locked active taxonomy context; student course/program is governed and privileged roles remain rejected | P1.3 integration active; later Identity extraction |
+| `admin.php` | Taxonomy governance HTML route | Admin-only, CSRF-protected create/rename/retire/reactivate transactions with parent locks and immutable events | P1.3 governance active; later controller extraction |
+| `get_universities.php`, `get_departments.php`, `get_courses.php`, `get_subjects.php` | Public dependent-selector JSON | Active-only, explicit parent-scoped Academic Taxonomy reads; server writes still revalidate | P1.3 contracts active |
 | `university_teachers.php` | Authenticated contributor JSON, inline SQL | Profiles legacy compatibility route; keep while versioned modular endpoint proves parity | P1.1 retained |
 | `teacher_profile.php` | Privacy-minimized profile plus normalized logical-resource list | Profiles view composed with Resources public read model | P1.2 normalized query active; later controller migration must preserve privacy and one-card-per-resource behavior |
 | `dashboard.php` | Account summary and owned logical resources | Profiles account view composed with Resources owner read model | P1.2 normalized query active; controller/view extraction remains later scope |
@@ -65,7 +65,7 @@ until deprecation, retention, data verification, and rollback requirements are m
 | `toggle_favorite.php`, `toggle_university_favorite.php` | CSRF JSON toggle commands | Collections controllers/services/repositories; retain idempotent and visibility/existence checks | Resource toggles now use stable `resource_id` (temporary `material_id` alias); university flow is unchanged |
 | `assets/app.js` | Safe selector/favorite DOM behavior | Shared UI asset; module scripts only if needed, continue `textContent`/DOM construction | Preserve |
 | `assets/app.css` | Committed generated utility CSS | Shared UI presentation baseline; build-tool decision separate from architecture | Preserve; no P1.1 redesign |
-| `database/schema.sql` | Fresh-install canonical normalized schema with preserved empty legacy sources/audits | Installation snapshot only; upgrades use the forward runner | Updated for P1.2 after adding the append-only migration; never run as an upgrade |
+| `database/schema.sql` | Fresh-install canonical resource model and governed taxonomy with preserved empty legacy sources/audits | Installation snapshot only; upgrades use the forward runner | Updated for P1.3 after adding the append-only migration; never run as an upgrade |
 | `database/seed_demo.sql` | Synthetic taxonomy fixture | Academic Taxonomy development fixture; no users/secrets | Preserve |
 | `database/migrations/001_p0_prepare.sql`, `database/migrations/002_p0_finalize.sql` | One-time historical upgrade sequence | Frozen/manual compatibility migrations, excluded from new auto-discovery | Preserve |
 | `scripts/migrate_legacy_uploads.php` | Conservative pre-normalization historical file preparation | File Ingestion operational compatibility tool | Guarded to fail closed after normalized tables exist; output does not disclose opaque keys |
@@ -85,4 +85,4 @@ until deprecation, retention, data verification, and rollback requirements are m
 
 No legacy route is removed merely because a modular equivalent exists. Removal needs
 observed parity, consumer migration/deprecation, production telemetry or an equivalent
-usage audit, rollback documentation, data compatibility, and separate approval. The P1.2 checkpoint removes none.
+usage audit, rollback documentation, data compatibility, and separate approval. The P1.2 and P1.3 checkpoints remove none.

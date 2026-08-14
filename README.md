@@ -1,6 +1,6 @@
 # EDU-SHARE
 
-EDU-SHARE is a frameworkless, server-rendered PHP application for targeted academic knowledge exchange. It preserves the **Phase 0: Secure Runnable Foundation** and **P1.1: Architecture Foundation**, and implements **P1.2: Normalized Resource & File Model**. One stable resource can contain multiple files and immutable numbered versions; favorites remain bound to that stable identity. Legacy source rows and route aliases are preserved for audited compatibility. P1.2 does not include full search, AI, recommendations, moderation workflows, a frontend rewrite, microservices, or orchestration.
+EDU-SHARE is a frameworkless, server-rendered PHP application for targeted academic knowledge exchange. It preserves the **Phase 0: Secure Runnable Foundation**, **P1.1: Architecture Foundation**, and **P1.2: Normalized Resource & File Model**, and implements **P1.3: Governed Academic Taxonomy**. One stable resource can contain multiple files and immutable numbered versions; favorites remain bound to that stable identity. University → department → course/program → subject/semester is now an active/retired, relationally enforced hierarchy used by accounts, resources, and dependent selectors. Legacy source rows, free-text branch evidence, and route aliases are preserved for audited compatibility. P1.3 does not include full search, AI, recommendations, moderation workflows, a frontend rewrite, microservices, or orchestration.
 
 See [`docs/architecture/`](docs/architecture/README.md) for the architecture decision, bounded modules, actual-file migration map, and compatibility/database/testing strategy.
 
@@ -82,9 +82,9 @@ For an existing deployment:
 4. Run `php scripts/migrate_legacy_uploads.php`. It copies recognized files from approved historical locations into private storage, validates extension and detected MIME, computes SHA-256 checksums, updates metadata, and deliberately leaves each source file untouched.
 5. Resolve every reported missing/invalid file and each reported non-canonical academic relationship against the backup and the intended taxonomy. Re-run until both summaries report zero failures.
 6. Run `database/migrations/002_p0_finalize.sql` (it targets the constraint names in the historical dump; inspect/adapt those names first if your deployed schema diverged).
-7. Inspect `php scripts/migrate.php status`, then apply the additive P1.2 migration with `php scripts/migrate.php apply` as schema owner.
-8. Review `legacy_material_migrations` and `legacy_favorite_migrations`. Every source row must be either deterministically mapped or `review_required` with a reason; do not invent missing academic/storage relationships.
-9. Test multi-file history plus authorized and unauthorized downloads before separately archiving any old upload directory. P1.2 does not delete legacy tables or source rows.
+7. Inspect `php scripts/migrate.php status`, then apply the additive P1.2 and P1.3 migrations with `php scripts/migrate.php apply` as schema owner.
+8. Review `legacy_material_migrations`, `legacy_favorite_migrations`, `legacy_user_academic_migrations`, and `academic_taxonomy_reviews`. Every source row must be deterministic, not applicable, or `review_required` with a reason; do not invent missing academic/storage relationships.
+9. Test multi-file history, dependent selectors, cross-parent rejection, retired-node rejection, and authorized/unauthorized downloads before separately archiving any old upload directory. Neither P1.2 nor P1.3 deletes legacy tables or source rows.
 
 The migration is intentionally conservative. It does not silently discard or merge uncertain data and does not grant historical teachers administrator access. Test a restored database/storage backup before changing production. Once normalized tables exist, the pre-P1.2 `migrate_legacy_uploads.php` utility fails closed to prevent one-sided metadata changes.
 
@@ -97,7 +97,7 @@ php scripts/migrate.php status
 php scripts/migrate.php apply
 ```
 
-The runner records checksums in `schema_migrations`, prevents concurrent execution, and rejects destructive `DROP`, `TRUNCATE`, and `DELETE FROM` statements. It never automatically replays the historical Phase 0 files. P1.2 adds `20260813120000_normalize_resources.sql`; it retains legacy data and audits deterministic/review-required outcomes. Read `database/migrations/forward/README.md` and [`docs/architecture/resource-model.md`](docs/architecture/resource-model.md) before applying it.
+The runner records checksums in `schema_migrations`, prevents concurrent execution, and rejects destructive `DROP`, `TRUNCATE`, and `DELETE FROM` statements. It never automatically replays the historical Phase 0 files. P1.2 adds `20260813120000_normalize_resources.sql`; P1.3 adds `20260814120000_govern_academic_taxonomy.sql`. Both retain legacy data and audit deterministic/review-required outcomes. Read `database/migrations/forward/README.md`, [`docs/architecture/resource-model.md`](docs/architecture/resource-model.md), and [`docs/architecture/academic-taxonomy.md`](docs/architecture/academic-taxonomy.md) before applying them.
 
 ## Canonical routes
 
@@ -174,4 +174,4 @@ php tests/integration.php
 bash tests/http_smoke.sh
 ```
 
-See `SECURITY.md` for reporting guidance and the deployment checklist. P1.2 now provides normalized Resource/Version/File records and stable resource favorites. Production backup/restore rehearsal, mail-based account recovery, moderation/scanning workflows, full search, AI learning services, recommendations, notifications, and later-phase features remain outside this checkpoint.
+See `SECURITY.md` for reporting guidance and the deployment checklist. P1.2 provides normalized Resource/Version/File records and stable resource favorites; P1.3 adds governed, auditable academic lineage without guessing legacy branch mappings. Production backup/restore rehearsal, mail-based account recovery, moderation/scanning workflows, full search, AI learning services, recommendations, notifications, and later-phase features remain outside this checkpoint.

@@ -12,7 +12,7 @@ if (mb_strlen($search) > 100) {
 }
 
 $filters = [];
-foreach (['university_id', 'course_id', 'subject_id', 'semester'] as $field) {
+foreach (['university_id', 'department_id', 'course_id', 'subject_id', 'semester'] as $field) {
     if (!isset($_GET[$field]) || $_GET[$field] === '') {
         $filters[$field] = null;
         continue;
@@ -21,6 +21,9 @@ foreach (['university_id', 'course_id', 'subject_id', 'semester'] as $field) {
     if ($filters[$field] === null || ($field === 'semester' && $filters[$field] > 12)) {
         abort_request(422, 'One of the selected filters is invalid.');
     }
+}
+if (!validate_academic_filter_relationships($filters)) {
+    abort_request(422, 'The selected academic filters are unavailable or cross parent boundaries.');
 }
 
 $sql = "SELECT r.id, r.owner_id, r.title, r.description, r.updated_at, r.semester,
@@ -58,6 +61,7 @@ if ($search !== '') {
 }
 $fieldColumns = [
     'university_id' => 'r.university_id',
+    'department_id' => 'r.department_id',
     'course_id' => 'r.course_id',
     'subject_id' => 'r.subject_id',
     'semester' => 'r.semester',
@@ -75,9 +79,56 @@ $statement->bind_param($types, ...$params);
 $statement->execute();
 $resources = $statement->get_result()->fetch_all(MYSQLI_ASSOC);
 
-$universities = db()->query('SELECT id, name FROM universities ORDER BY name')->fetch_all(MYSQLI_ASSOC);
-$courses = db()->query('SELECT id, name FROM courses ORDER BY name')->fetch_all(MYSQLI_ASSOC);
-$subjects = db()->query('SELECT id, name, semester FROM subjects ORDER BY name')->fetch_all(MYSQLI_ASSOC);
+$universities = db()->query(
+    'SELECT id, name FROM universities WHERE is_active = 1 ORDER BY name'
+)->fetch_all(MYSQLI_ASSOC);
+$departments = [];
+$courses = [];
+$subjects = [];
+if ($filters['university_id'] !== null) {
+    $options = db()->prepare(
+        'SELECT d.id, d.name FROM departments d
+          JOIN universities u ON u.id = d.university_id
+         WHERE u.id = ? AND u.is_active = 1 AND d.is_active = 1 ORDER BY d.name'
+    );
+    $selectedUniversityId = $filters['university_id'];
+    $options->bind_param('i', $selectedUniversityId);
+    $options->execute();
+    $departments = $options->get_result()->fetch_all(MYSQLI_ASSOC);
+}
+if ($filters['department_id'] !== null) {
+    $options = db()->prepare(
+        'SELECT c.id, c.name FROM courses c
+          JOIN departments d ON d.id = c.department_id
+          JOIN universities u ON u.id = d.university_id
+         WHERE d.id = ? AND u.is_active = 1 AND d.is_active = 1 AND c.is_active = 1
+         ORDER BY c.name'
+    );
+    $selectedDepartmentId = $filters['department_id'];
+    $options->bind_param('i', $selectedDepartmentId);
+    $options->execute();
+    $courses = $options->get_result()->fetch_all(MYSQLI_ASSOC);
+}
+if ($filters['course_id'] !== null) {
+    $subjectOptionsSql =
+        'SELECT s.id, s.name, s.semester FROM subjects s
+          JOIN courses c ON c.id = s.course_id AND c.department_id = s.department_id
+          JOIN departments d ON d.id = c.department_id
+          JOIN universities u ON u.id = d.university_id
+         WHERE c.id = ?
+           AND u.is_active = 1 AND d.is_active = 1 AND c.is_active = 1 AND s.is_active = 1';
+    $selectedCourseId = $filters['course_id'];
+    if ($filters['semester'] === null) {
+        $options = db()->prepare($subjectOptionsSql . ' ORDER BY s.semester, s.name');
+        $options->bind_param('i', $selectedCourseId);
+    } else {
+        $selectedSemester = $filters['semester'];
+        $options = db()->prepare($subjectOptionsSql . ' AND s.semester = ? ORDER BY s.name');
+        $options->bind_param('ii', $selectedCourseId, $selectedSemester);
+    }
+    $options->execute();
+    $subjects = $options->get_result()->fetch_all(MYSQLI_ASSOC);
+}
 
 $universityFavorites = [];
 $favoritesStatement = db()->prepare('SELECT university_id FROM university_favorites WHERE user_id = ?');
@@ -93,13 +144,14 @@ render_header('Resource library', 'library');
     <h1 class="text-4xl font-extrabold text-center mb-3">Resource library</h1>
     <p class="status-message text-center mb-5" data-status-message role="status"></p>
 
-    <form method="get" action="<?= h(app_url('homepage.php')) ?>" class="bg-white p-5 rounded-xl shadow mb-8 grid md:grid-cols-6 gap-3">
+    <form method="get" action="<?= h(app_url('homepage.php')) ?>" data-academic-chain class="bg-white p-5 rounded-xl shadow mb-8 grid md:grid-cols-7 gap-3">
         <label class="md:col-span-2"><span class="sr-only">Search</span><input name="search" value="<?= h($search) ?>" maxlength="100" placeholder="Search title, description, course, subject" class="w-full border rounded-lg p-3"></label>
-        <label><span class="sr-only">University</span><select name="university_id" class="w-full border rounded-lg p-3"><option value="">All universities</option><?php foreach ($universities as $item): ?><option value="<?= (int) $item['id'] ?>" <?= $filters['university_id'] === (int) $item['id'] ? 'selected' : '' ?>><?= h($item['name']) ?></option><?php endforeach; ?></select></label>
-        <label><span class="sr-only">Course</span><select name="course_id" class="w-full border rounded-lg p-3"><option value="">All courses</option><?php foreach ($courses as $item): ?><option value="<?= (int) $item['id'] ?>" <?= $filters['course_id'] === (int) $item['id'] ? 'selected' : '' ?>><?= h($item['name']) ?></option><?php endforeach; ?></select></label>
-        <label><span class="sr-only">Subject</span><select name="subject_id" class="w-full border rounded-lg p-3"><option value="">All subjects</option><?php foreach ($subjects as $item): ?><option value="<?= (int) $item['id'] ?>" <?= $filters['subject_id'] === (int) $item['id'] ? 'selected' : '' ?>><?= h($item['name']) ?></option><?php endforeach; ?></select></label>
-        <label><span class="sr-only">Semester</span><select name="semester" class="w-full border rounded-lg p-3"><option value="">All semesters</option><?php for ($semester = 1; $semester <= 12; $semester++): ?><option value="<?= $semester ?>" <?= $filters['semester'] === $semester ? 'selected' : '' ?>>Semester <?= $semester ?></option><?php endfor; ?></select></label>
-        <div class="md:col-span-6 flex gap-3 justify-end"><a href="<?= h(app_url('homepage.php')) ?>" class="px-5 py-2 text-gray-700">Clear</a><button class="bg-blue-600 text-white px-6 py-2 rounded-lg">Search</button></div>
+        <label><span class="sr-only">University</span><select name="university_id" data-university-select data-departments-endpoint="<?= h(app_url('get_departments.php')) ?>" class="w-full border rounded-lg p-3"><option value="">All universities</option><?php foreach ($universities as $item): ?><option value="<?= (int) $item['id'] ?>" <?= $filters['university_id'] === (int) $item['id'] ? 'selected' : '' ?>><?= h($item['name']) ?></option><?php endforeach; ?></select></label>
+        <label><span class="sr-only">Department</span><select name="department_id" data-department-select data-courses-endpoint="<?= h(app_url('get_courses.php')) ?>" class="w-full border rounded-lg p-3"><option value="">All departments</option><?php foreach ($departments as $item): ?><option value="<?= (int) $item['id'] ?>" <?= $filters['department_id'] === (int) $item['id'] ? 'selected' : '' ?>><?= h($item['name']) ?></option><?php endforeach; ?></select></label>
+        <label><span class="sr-only">Course</span><select name="course_id" data-course-select data-subjects-endpoint="<?= h(app_url('get_subjects.php')) ?>" class="w-full border rounded-lg p-3"><option value="">All courses</option><?php foreach ($courses as $item): ?><option value="<?= (int) $item['id'] ?>" <?= $filters['course_id'] === (int) $item['id'] ? 'selected' : '' ?>><?= h($item['name']) ?></option><?php endforeach; ?></select></label>
+        <label><span class="sr-only">Semester</span><select name="semester" data-semester-select class="w-full border rounded-lg p-3"><option value="">All semesters</option><?php for ($semester = 1; $semester <= 12; $semester++): ?><option value="<?= $semester ?>" <?= $filters['semester'] === $semester ? 'selected' : '' ?>>Semester <?= $semester ?></option><?php endfor; ?></select></label>
+        <label><span class="sr-only">Subject</span><select name="subject_id" data-subject-select class="w-full border rounded-lg p-3"><option value="">All subjects</option><?php foreach ($subjects as $item): ?><option value="<?= (int) $item['id'] ?>" <?= $filters['subject_id'] === (int) $item['id'] ? 'selected' : '' ?>><?= h($item['name']) ?></option><?php endforeach; ?></select></label>
+        <div class="md:col-span-7 flex gap-3 justify-end"><a href="<?= h(app_url('homepage.php')) ?>" class="px-5 py-2 text-gray-700">Clear</a><button class="bg-blue-600 text-white px-6 py-2 rounded-lg">Search</button></div>
     </form>
 
     <section class="mb-8">

@@ -7,10 +7,12 @@ require_method('GET');
 $user = require_auth();
 $userId = (int) $user['id'];
 $profileStatement = db()->prepare(
-    'SELECT u.full_name, u.gmail, u.user_type, uni.name AS university_name, d.name AS department_name
+    'SELECT u.full_name, u.gmail, u.user_type, u.year,
+            uni.name AS university_name, d.name AS department_name, c.name AS course_name
        FROM users u
        LEFT JOIN universities uni ON uni.id = u.university_id
-       LEFT JOIN departments d ON d.id = u.department_id
+       LEFT JOIN departments d ON d.id = u.department_id AND d.university_id = u.university_id
+       LEFT JOIN courses c ON c.id = u.course_id AND c.department_id = u.department_id
       WHERE u.id = ?'
 );
 $profileStatement->bind_param('i', $userId);
@@ -59,12 +61,14 @@ render_header('Dashboard', 'dashboard');
 
     <section class="bg-white p-7 rounded-xl shadow mb-8">
         <div class="flex justify-between items-center gap-4"><h2 class="text-2xl font-bold mb-4">Account</h2><a class="text-blue-700" href="<?= h(app_url('teacher_profile.php?id=' . $userId)) ?>">View profile</a></div>
-        <dl class="grid sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        <dl class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div><dt class="text-xs uppercase text-gray-500">Name</dt><dd class="font-semibold"><?= h($profile['full_name']) ?></dd></div>
             <div><dt class="text-xs uppercase text-gray-500">Private email</dt><dd class="font-semibold break-all"><?= h($profile['gmail']) ?></dd></div>
             <div><dt class="text-xs uppercase text-gray-500">Role</dt><dd class="font-semibold"><?= h(ucfirst($profile['user_type'])) ?></dd></div>
             <div><dt class="text-xs uppercase text-gray-500">University</dt><dd class="font-semibold"><?= h($profile['university_name'] ?? 'Not set') ?></dd></div>
             <div><dt class="text-xs uppercase text-gray-500">Department</dt><dd class="font-semibold"><?= h($profile['department_name'] ?? 'Not set') ?></dd></div>
+            <div><dt class="text-xs uppercase text-gray-500">Course / program</dt><dd class="font-semibold"><?= h($profile['course_name'] ?? 'Not applicable or awaiting review') ?></dd></div>
+            <div><dt class="text-xs uppercase text-gray-500">Year of study</dt><dd class="font-semibold"><?= $profile['year'] === null ? 'Not applicable' : (int) $profile['year'] ?></dd></div>
         </dl>
     </section>
 

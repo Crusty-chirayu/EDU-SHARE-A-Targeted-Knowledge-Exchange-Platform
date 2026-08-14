@@ -53,7 +53,7 @@ $teacherPassword = 'TeacherPass123';
     'password' => $studentPassword,
     'university_id' => '1',
     'department_id' => '1',
-    'branch' => 'Computer Science',
+    'course_id' => '1',
     'year' => '2',
     'contact' => '+91 98765 43210',
     'address' => 'Synthetic test address',
@@ -61,6 +61,11 @@ $teacherPassword = 'TeacherPass123';
 check($studentErrors === [], 'valid student registration input is accepted');
 $studentId = register_user($studentValues);
 check($studentId > 0, 'student registration persists an account');
+$studentContext = db()->query('SELECT course_id, branch FROM users WHERE id = ' . $studentId)->fetch_assoc();
+check(
+    (int) $studentContext['course_id'] === 1 && $studentContext['branch'] === null,
+    'student registration persists governed course context without new free-text branch data'
+);
 
 [$teacherValues, $teacherErrors] = validate_registration_input([
     'role' => 'teacher',
@@ -70,7 +75,13 @@ check($studentId > 0, 'student registration persists an account');
     'university_id' => '1',
     'department_id' => '1',
 ]);
-check($teacherErrors === [] && $teacherValues['branch'] === null && $teacherValues['year'] === null, 'teacher registration canonicalizes student-only fields');
+check(
+    $teacherErrors === []
+        && $teacherValues['branch'] === null
+        && $teacherValues['course_id'] === null
+        && $teacherValues['year'] === null,
+    'teacher registration canonicalizes student-only fields'
+);
 $teacherId = register_user($teacherValues);
 check($teacherId > 0, 'teacher registration persists an account');
 
@@ -143,6 +154,15 @@ check(!validate_academic_relationships([
     'subject_id' => 2,
     'semester' => 1,
 ]), 'mismatched semester/subject path is rejected');
+db()->query('UPDATE subjects SET is_active = 0 WHERE id = 1');
+check(!validate_academic_relationships([
+    'university_id' => 1,
+    'department_id' => 1,
+    'course_id' => 1,
+    'subject_id' => 1,
+    'semester' => 1,
+]), 'retired academic nodes are rejected for new resource context');
+db()->query('UPDATE subjects SET is_active = 1 WHERE id = 1');
 
 ensure_private_directory(upload_storage_directory());
 $invalidKeys = [
@@ -364,12 +384,101 @@ $legacyFavorite->bind_param('ii', $studentId, $legacyTwo);
 $legacyFavorite->execute();
 $legacyFavoriteId = (int) $legacyFavorite->insert_id;
 
+$legacyPassword = password_hash('LegacyAcademic123', PASSWORD_DEFAULT);
+$legacyRole = 'student';
+$legacyExactBranch = '  bachelor of computer applications  ';
+$legacyExactEmail = "legacy-exact-{$suffix}@example.test";
+$legacyExactName = 'Legacy Exact Academic User';
+$legacyUser = db()->prepare(
+    'INSERT INTO users
+        (full_name, gmail, password, user_type, university_id, department_id, course_id, branch, year)
+     VALUES (?, ?, ?, ?, 1, 1, NULL, ?, 2)'
+);
+$legacyUser->bind_param(
+    'sssss',
+    $legacyExactName,
+    $legacyExactEmail,
+    $legacyPassword,
+    $legacyRole,
+    $legacyExactBranch
+);
+$legacyUser->execute();
+$legacyExactUserId = (int) $legacyUser->insert_id;
+$legacyUnmatchedBranch = 'Unverified Historical Branch';
+$legacyUnmatchedEmail = "legacy-unmatched-{$suffix}@example.test";
+$legacyUnmatchedName = 'Legacy Unmatched Academic User';
+$legacyUser->bind_param(
+    'sssss',
+    $legacyUnmatchedName,
+    $legacyUnmatchedEmail,
+    $legacyPassword,
+    $legacyRole,
+    $legacyUnmatchedBranch
+);
+$legacyUser->execute();
+$legacyUnmatchedUserId = (int) $legacyUser->insert_id;
+
 $migrationRunner = new EduShare\Shared\Persistence\MigrationRunner(
     db(),
     APP_ROOT . '/database/migrations/forward'
 );
 $appliedMigrations = $migrationRunner->applyPending();
 check(in_array('20260813120000', $appliedMigrations, true), 'P1.2 forward migration applies through the checksummed runner');
+check(in_array('20260814120000', $appliedMigrations, true), 'P1.3 taxonomy migration applies through the checksummed runner');
+$studentAcademicMigration = db()->query(
+    "SELECT proposed_course_id, migration_status, reason_code
+       FROM legacy_user_academic_migrations WHERE user_id = {$studentId}"
+)->fetch_assoc();
+check(
+    $studentAcademicMigration !== null
+        && (int) $studentAcademicMigration['proposed_course_id'] === 1
+        && $studentAcademicMigration['migration_status'] === 'migrated'
+        && $studentAcademicMigration['reason_code'] === null,
+    'P1.3 migration preserves an existing valid canonical student course context'
+);
+$teacherAcademicMigration = db()->query(
+    "SELECT migration_status, reason_code
+       FROM legacy_user_academic_migrations WHERE user_id = {$teacherId}"
+)->fetch_assoc();
+check(
+    $teacherAcademicMigration !== null
+        && $teacherAcademicMigration['migration_status'] === 'not_applicable'
+        && $teacherAcademicMigration['reason_code'] === null,
+    'P1.3 migration does not invent course context for a contributor'
+);
+$exactLegacyContext = db()->query(
+    "SELECT u.course_id, u.branch, migration.migration_status, migration.reason_code
+       FROM users u
+       JOIN legacy_user_academic_migrations migration ON migration.user_id = u.id
+      WHERE u.id = {$legacyExactUserId}"
+)->fetch_assoc();
+check(
+    $exactLegacyContext !== null
+        && (int) $exactLegacyContext['course_id'] === 1
+        && $exactLegacyContext['branch'] === $legacyExactBranch
+        && $exactLegacyContext['migration_status'] === 'migrated'
+        && $exactLegacyContext['reason_code'] === null,
+    'unique exact in-department legacy branch mapping is copied without rewriting its evidence'
+);
+$unmatchedLegacyContext = db()->query(
+    "SELECT u.course_id, u.branch, migration.migration_status, migration.reason_code,
+            review.review_status
+       FROM users u
+       JOIN legacy_user_academic_migrations migration ON migration.user_id = u.id
+       JOIN academic_taxonomy_reviews review
+         ON review.entity_type = 'user' AND review.entity_id = u.id
+        AND review.reason_code = migration.reason_code
+      WHERE u.id = {$legacyUnmatchedUserId}"
+)->fetch_assoc();
+check(
+    $unmatchedLegacyContext !== null
+        && $unmatchedLegacyContext['course_id'] === null
+        && $unmatchedLegacyContext['branch'] === $legacyUnmatchedBranch
+        && $unmatchedLegacyContext['migration_status'] === 'review_required'
+        && $unmatchedLegacyContext['reason_code'] === 'legacy_branch_no_exact_course'
+        && $unmatchedLegacyContext['review_status'] === 'open',
+    'unmatched legacy branch remains unchanged and explicitly review-required'
+);
 $deterministicAudit = db()->query(
     "SELECT material_id, resource_id, migration_status FROM legacy_material_migrations
       WHERE material_id IN ({$legacyOne}, {$legacyTwo}) ORDER BY material_id"

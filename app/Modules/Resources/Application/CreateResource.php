@@ -25,6 +25,11 @@ final class CreateResource
         $this->repository->begin();
         try {
             $this->repository->lockOwner($ownerId);
+            if (!$this->repository->lockActiveAcademicPath($metadata)) {
+                throw new \InvalidArgumentException(
+                    'The selected academic context is unavailable or crosses parent boundaries.'
+                );
+            }
             $this->assertFileSet($ownerId, null, $files);
             $documentType = $this->documentType($files);
             $resourceId = $this->repository->insertResource($ownerId, $metadata, $documentType);

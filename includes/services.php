@@ -100,8 +100,12 @@ function register_user(array $values): int
     if (!in_array($values['role'] ?? null, ['student', 'teacher'], true)) {
         abort_request(422, 'Public registration can only create student or teacher/contributor accounts.');
     }
-    if (!validate_department_relationship((int) $values['university_id'], (int) $values['department_id'])) {
-        abort_request(422, 'The selected department does not belong to the selected university.');
+
+    $universityId = (int) ($values['university_id'] ?? 0);
+    $departmentId = (int) ($values['department_id'] ?? 0);
+    $courseId = $values['role'] === 'student' ? (int) ($values['course_id'] ?? 0) : null;
+    if ($universityId < 1 || $departmentId < 1 || ($values['role'] === 'student' && $courseId < 1)) {
+        abort_request(422, 'Choose a valid governed academic context.');
     }
 
     $passwordHash = password_hash((string) $values['password'], PASSWORD_DEFAULT);
@@ -109,30 +113,68 @@ function register_user(array $values): int
         throw new RuntimeException('Password hashing failed.');
     }
 
-    $branch = $values['branch'] ?: null;
-    $year = $values['year'] ?: null;
-    $contact = $values['contact'] ?: null;
-    $address = $values['address'] ?: null;
-    $statement = db()->prepare(
-        'INSERT INTO users
-         (full_name, gmail, password, user_type, university_id, department_id, branch, year, contact, address)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    );
-    $statement->bind_param(
-        'ssssiisiss',
-        $values['name'],
-        $values['email'],
-        $passwordHash,
-        $values['role'],
-        $values['university_id'],
-        $values['department_id'],
-        $branch,
-        $year,
-        $contact,
-        $address
-    );
-    $statement->execute();
-    return (int) db()->insert_id;
+    $connection = db();
+    $connection->begin_transaction();
+    try {
+        // Lock the active lineage in the same transaction as the account write so an
+        // administrator cannot retire a selected node between validation and INSERT.
+        if ($courseId !== null) {
+            $academic = $connection->prepare(
+                'SELECT c.id
+                   FROM universities u
+                   JOIN departments d ON d.university_id = u.id
+                   JOIN courses c ON c.department_id = d.id
+                  WHERE u.id = ? AND d.id = ? AND c.id = ?
+                    AND u.is_active = 1 AND d.is_active = 1 AND c.is_active = 1
+                  FOR UPDATE'
+            );
+            $academic->bind_param('iii', $universityId, $departmentId, $courseId);
+        } else {
+            $academic = $connection->prepare(
+                'SELECT d.id
+                   FROM universities u
+                   JOIN departments d ON d.university_id = u.id
+                  WHERE u.id = ? AND d.id = ? AND u.is_active = 1 AND d.is_active = 1
+                  FOR UPDATE'
+            );
+            $academic->bind_param('ii', $universityId, $departmentId);
+        }
+        $academic->execute();
+        if ($academic->get_result()->num_rows !== 1) {
+            abort_request(422, 'The selected academic context is unavailable or crosses parent boundaries.');
+        }
+
+        $branch = null; // retained legacy column; never accept new free-text lineage
+        $year = $values['year'] ?: null;
+        $contact = $values['contact'] ?: null;
+        $address = $values['address'] ?: null;
+        $statement = $connection->prepare(
+            'INSERT INTO users
+             (full_name, gmail, password, user_type, university_id, department_id, course_id, branch, year, contact, address)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $statement->bind_param(
+            'ssssiiisiss',
+            $values['name'],
+            $values['email'],
+            $passwordHash,
+            $values['role'],
+            $universityId,
+            $departmentId,
+            $courseId,
+            $branch,
+            $year,
+            $contact,
+            $address
+        );
+        $statement->execute();
+        $userId = (int) $connection->insert_id;
+        $connection->commit();
+        return $userId;
+    } catch (Throwable $exception) {
+        $connection->rollback();
+        throw $exception;
+    }
 }
 
 function login_rate_key(string $email): string
@@ -270,6 +312,14 @@ function toggle_university_favorite(int $userId, int $universityId): string
             $delete->execute();
             $action = 'removed';
         } else {
+            $university = $connection->prepare(
+                'SELECT id FROM universities WHERE id = ? AND is_active = 1 FOR UPDATE'
+            );
+            $university->bind_param('i', $universityId);
+            $university->execute();
+            if ($university->get_result()->num_rows !== 1) {
+                abort_request(422, 'Retired universities cannot be added to favorites.');
+            }
             $insert = $connection->prepare('INSERT INTO university_favorites (user_id, university_id) VALUES (?, ?)');
             $insert->bind_param('ii', $userId, $universityId);
             $insert->execute();

@@ -36,14 +36,36 @@ if (request_method() === 'POST') {
     }
 }
 
-$universities = db()->query('SELECT id, name FROM universities ORDER BY name')->fetch_all(MYSQLI_ASSOC);
+$universities = db()->query(
+    'SELECT id, name FROM universities WHERE is_active = 1 ORDER BY name'
+)->fetch_all(MYSQLI_ASSOC);
 $departments = [];
+$courses = [];
 $selectedUniversity = positive_int($input['university_id'] ?? null);
+$selectedDepartment = positive_int($input['department_id'] ?? null);
+$selectedCourse = positive_int($input['course_id'] ?? null);
 if ($selectedUniversity !== null) {
-    $statement = db()->prepare('SELECT id, name FROM departments WHERE university_id = ? ORDER BY name');
+    $statement = db()->prepare(
+        'SELECT d.id, d.name
+           FROM departments d JOIN universities u ON u.id = d.university_id
+          WHERE u.id = ? AND u.is_active = 1 AND d.is_active = 1 ORDER BY d.name'
+    );
     $statement->bind_param('i', $selectedUniversity);
     $statement->execute();
     $departments = $statement->get_result()->fetch_all(MYSQLI_ASSOC);
+}
+if ($selectedDepartment !== null) {
+    $statement = db()->prepare(
+        'SELECT c.id, c.name
+           FROM courses c
+           JOIN departments d ON d.id = c.department_id
+           JOIN universities u ON u.id = d.university_id
+          WHERE d.id = ? AND u.is_active = 1 AND d.is_active = 1 AND c.is_active = 1
+          ORDER BY c.name'
+    );
+    $statement->bind_param('i', $selectedDepartment);
+    $statement->execute();
+    $courses = $statement->get_result()->fetch_all(MYSQLI_ASSOC);
 }
 
 render_header('Register');
@@ -59,7 +81,7 @@ render_header('Register');
                 <ul class="list-disc ml-5"><?php foreach ($errors as $message): ?><li><?= h($message) ?></li><?php endforeach; ?></ul>
             </div>
         <?php endif; ?>
-        <form method="post" action="<?= h(app_url('register.php')) ?>" class="space-y-4">
+        <form method="post" action="<?= h(app_url('register.php')) ?>" data-academic-chain class="space-y-4">
             <?= csrf_field() ?>
             <div>
                 <label for="role" class="block text-sm font-medium mb-1">Account type</label>
@@ -77,21 +99,21 @@ render_header('Register');
             <div class="grid md:grid-cols-2 gap-4">
                 <div>
                     <label for="university_id" class="block text-sm font-medium mb-1">University</label>
-                    <select id="university_id" name="university_id" data-university-select required class="w-full px-4 py-3 border rounded-lg">
+                    <select id="university_id" name="university_id" data-university-select data-departments-endpoint="<?= h(app_url('get_departments.php')) ?>" required class="w-full px-4 py-3 border rounded-lg">
                         <option value="">Select university</option>
                         <?php foreach ($universities as $university): ?><option value="<?= (int) $university['id'] ?>" <?= $selectedUniversity === (int) $university['id'] ? 'selected' : '' ?>><?= h($university['name']) ?></option><?php endforeach; ?>
                     </select>
                 </div>
                 <div>
                     <label for="department_id" class="block text-sm font-medium mb-1">Department</label>
-                    <select id="department_id" name="department_id" data-department-select data-endpoint="<?= h(app_url('get_departments.php')) ?>" required class="w-full px-4 py-3 border rounded-lg">
+                    <select id="department_id" name="department_id" data-department-select data-courses-endpoint="<?= h(app_url('get_courses.php')) ?>" required class="w-full px-4 py-3 border rounded-lg">
                         <option value="">Select department</option>
-                        <?php foreach ($departments as $department): ?><option value="<?= (int) $department['id'] ?>" <?= positive_int($input['department_id'] ?? null) === (int) $department['id'] ? 'selected' : '' ?>><?= h($department['name']) ?></option><?php endforeach; ?>
+                        <?php foreach ($departments as $department): ?><option value="<?= (int) $department['id'] ?>" <?= $selectedDepartment === (int) $department['id'] ? 'selected' : '' ?>><?= h($department['name']) ?></option><?php endforeach; ?>
                     </select>
                 </div>
             </div>
             <div class="grid md:grid-cols-2 gap-4">
-                <div><label for="branch" class="block text-sm font-medium mb-1">Student branch</label><input id="branch" name="branch" value="<?= h($input['branch'] ?? '') ?>" maxlength="100" class="w-full px-4 py-3 border rounded-lg"><p class="text-xs text-gray-500 mt-1">Required for students.</p></div>
+                <div><label for="course_id" class="block text-sm font-medium mb-1">Student course / program</label><select id="course_id" name="course_id" data-course-select class="w-full px-4 py-3 border rounded-lg"><option value="">Select course/program</option><?php foreach ($courses as $course): ?><option value="<?= (int) $course['id'] ?>" <?= $selectedCourse === (int) $course['id'] ? 'selected' : '' ?>><?= h($course['name']) ?></option><?php endforeach; ?></select><p class="text-xs text-gray-500 mt-1">Required for students; selected from the department's governed taxonomy.</p></div>
                 <div><label for="year" class="block text-sm font-medium mb-1">Year of study</label><input id="year" type="number" min="1" max="8" name="year" value="<?= h($input['year'] ?? '') ?>" class="w-full px-4 py-3 border rounded-lg"><p class="text-xs text-gray-500 mt-1">Required for students (1–8).</p></div>
             </div>
             <div class="grid md:grid-cols-2 gap-4">
