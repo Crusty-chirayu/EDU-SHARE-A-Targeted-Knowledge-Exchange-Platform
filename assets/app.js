@@ -34,20 +34,20 @@
         return data;
     }
 
-    document.querySelectorAll('[data-favorite-material]').forEach((button) => {
+    document.querySelectorAll('[data-favorite-resource]').forEach((button) => {
         button.addEventListener('click', async () => {
             button.disabled = true;
             try {
                 const data = await postJson(button.dataset.endpoint, {
-                    material_id: Number(button.dataset.favoriteMaterial)
+                    resource_id: Number(button.dataset.favoriteResource)
                 });
                 const active = data.action === 'added';
                 button.dataset.active = active ? 'true' : 'false';
                 button.setAttribute('aria-pressed', active ? 'true' : 'false');
                 button.textContent = active ? '♥ Favorited' : '♡ Favorite';
-                showStatus(active ? 'Material added to favorites.' : 'Material removed from favorites.');
+                showStatus(active ? 'Resource added to favorites.' : 'Resource removed from favorites.');
                 if (button.dataset.removeOnUnfavorite === 'true' && !active) {
-                    button.closest('[data-material-card]')?.remove();
+                    button.closest('[data-resource-card]')?.remove();
                 }
             } catch (error) {
                 showStatus(error.message, true);

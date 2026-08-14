@@ -1,6 +1,6 @@
 # EDU-SHARE
 
-EDU-SHARE is a frameworkless, server-rendered PHP application for targeted academic material exchange. It preserves the **Phase 0: Secure Runnable Foundation** and adds **P1.1: Architecture Foundation**: a dependency-free modular-monolith boundary, centralized versioned routing, forward migration tooling, and one authenticated contributor-directory vertical slice. Legacy routes remain available. P1.1 does not include the P1.2 Resource/ResourceFile redesign, a frontend rewrite, or AI features.
+EDU-SHARE is a frameworkless, server-rendered PHP application for targeted academic knowledge exchange. It preserves the **Phase 0: Secure Runnable Foundation** and **P1.1: Architecture Foundation**, and implements **P1.2: Normalized Resource & File Model**. One stable resource can contain multiple files and immutable numbered versions; favorites remain bound to that stable identity. Legacy source rows and route aliases are preserved for audited compatibility. P1.2 does not include full search, AI, recommendations, moderation workflows, a frontend rewrite, microservices, or orchestration.
 
 See [`docs/architecture/`](docs/architecture/README.md) for the architecture decision, bounded modules, actual-file migration map, and compatibility/database/testing strategy.
 
@@ -82,11 +82,13 @@ For an existing deployment:
 4. Run `php scripts/migrate_legacy_uploads.php`. It copies recognized files from approved historical locations into private storage, validates extension and detected MIME, computes SHA-256 checksums, updates metadata, and deliberately leaves each source file untouched.
 5. Resolve every reported missing/invalid file and each reported non-canonical academic relationship against the backup and the intended taxonomy. Re-run until both summaries report zero failures.
 6. Run `database/migrations/002_p0_finalize.sql` (it targets the constraint names in the historical dump; inspect/adapt those names first if your deployed schema diverged).
-7. Test authorized and unauthorized downloads before separately archiving or deleting legacy upload directories.
+7. Inspect `php scripts/migrate.php status`, then apply the additive P1.2 migration with `php scripts/migrate.php apply` as schema owner.
+8. Review `legacy_material_migrations` and `legacy_favorite_migrations`. Every source row must be either deterministically mapped or `review_required` with a reason; do not invent missing academic/storage relationships.
+9. Test multi-file history plus authorized and unauthorized downloads before separately archiving any old upload directory. P1.2 does not delete legacy tables or source rows.
 
-The migration is intentionally conservative. It does not silently discard data and does not grant historical teachers administrator access. Test a restored backup before changing production.
+The migration is intentionally conservative. It does not silently discard or merge uncertain data and does not grant historical teachers administrator access. Test a restored database/storage backup before changing production. Once normalized tables exist, the pre-P1.2 `migrate_legacy_uploads.php` utility fails closed to prevent one-sided metadata changes.
 
-## Forward migrations after P1.1
+## Forward migrations
 
 New incremental migrations live only in `database/migrations/forward/` and use the `YYYYMMDDHHMMSS_short_description.sql` naming contract. Inspect status and apply explicitly as a schema-owner account:
 
@@ -95,11 +97,11 @@ php scripts/migrate.php status
 php scripts/migrate.php apply
 ```
 
-The runner records checksums in `schema_migrations`, prevents concurrent execution, and rejects destructive `DROP`, `TRUNCATE`, and `DELETE FROM` statements. It never automatically replays the historical Phase 0 migration files. P1.1 contains no domain-schema migration; read `database/migrations/forward/README.md` before adding one.
+The runner records checksums in `schema_migrations`, prevents concurrent execution, and rejects destructive `DROP`, `TRUNCATE`, and `DELETE FROM` statements. It never automatically replays the historical Phase 0 files. P1.2 adds `20260813120000_normalize_resources.sql`; it retains legacy data and audits deterministic/review-required outcomes. Read `database/migrations/forward/README.md` and [`docs/architecture/resource-model.md`](docs/architecture/resource-model.md) before applying it.
 
 ## Canonical routes
 
-`index.php` is the canonical public entry point. `mainhome.php` permanently redirects to it. `homepage.php` is the authenticated material library; the legacy `lib.php` route redirects compatible filters to `homepage.php` rather than duplicating the implementation.
+`index.php` is the canonical public entry point. `mainhome.php` permanently redirects to it. `homepage.php` is the normalized resource library; the legacy `lib.php` route redirects compatible filters to `homepage.php` rather than duplicating the implementation.
 
 | Route | Methods | Access and purpose |
 |---|---|---|
@@ -107,16 +109,18 @@ The runner records checksums in `schema_migrations`, prevents concurrent executi
 | `login1.php` | GET, POST | Sign in; POST is CSRF-protected and rate-limited |
 | `register.php` | GET, POST | Student/teacher registration with canonical academic validation |
 | `logout.php` | POST | Authenticated, CSRF-protected sign out |
-| `homepage.php` | GET | Authenticated material search/browse |
-| `dashboard.php` | GET | Account summary and owned materials |
-| `favorites.php` | GET | Saved materials and universities |
-| `teacher_profile.php?id=<user-id>` | GET | Privacy-minimized public contributor profile |
-| `upload.php` | GET | Contributor upload form |
-| `process_upload.php` | POST | CSRF-protected contributor upload processing |
-| `download.php?id=<material-id>` | GET | Authorized, ID-based file response |
-| `delete_material.php` | POST | Owner/moderator/admin material deletion |
+| `homepage.php` | GET | Authenticated normalized resource browse/filter |
+| `dashboard.php` | GET | Account summary and owned resources |
+| `favorites.php` | GET | Saved stable resources and universities |
+| `teacher_profile.php?id=<user-id>` | GET | Privacy-minimized public contributor profile and visible resources |
+| `resource.php?id=<resource-id>` | GET | Authorized stable resource metadata and complete version/file history |
+| `upload.php[?resource_id=<resource-id>]` | GET | Contributor create-resource or owner add-version form |
+| `process_upload.php` | POST | CSRF-protected atomic resource/version multi-file processing |
+| `update_resource.php` | POST | Owner-only CSRF-protected logical metadata update |
+| `download.php?id=<resource-id>&file_id=<file-id>` | GET | Authorized logical-ID file response; no path/key input |
+| `delete_material.php` | POST | Compatibility-named owner/moderator/admin logical resource deletion |
 | `admin.php` | GET, POST | Admin-only academic taxonomy management |
-| `toggle_favorite.php` | JSON POST | CSRF-protected material favorite toggle |
+| `toggle_favorite.php` | JSON POST | CSRF-protected stable resource favorite toggle |
 | `toggle_university_favorite.php` | JSON POST | CSRF-protected university favorite toggle |
 | `get_universities.php`, `get_departments.php`, `get_courses.php`, `get_subjects.php` | GET JSON | Strictly validated dependent-selector data |
 | `university_teachers.php` | GET JSON | Authenticated legacy contributor directory; retained unchanged for compatibility |
@@ -128,14 +132,14 @@ The versioned API is dispatched through `app.php` and `routes/app.php`; Apache, 
 
 | Capability | Student | Teacher | Moderator | Admin |
 |---|:---:|:---:|:---:|:---:|
-| Browse/download visible material | Yes | Yes | Yes | Yes |
+| Browse/download visible resource files | Yes | Yes | Yes | Yes |
 | Manage personal favorites | Yes | Yes | Yes | Yes |
-| Upload material | No | Yes | Yes | Yes |
-| Delete own material | No upload | Yes | Yes | Yes |
-| Delete another user's material | No | No | Yes | Yes |
+| Create resource/add own versions | No | Yes | Yes | Yes |
+| Update/delete own active resource | No upload | Yes | Yes | Yes |
+| Delete another user's active resource | No | No | Yes | Yes |
 | Manage academic taxonomy | No | No | No | Yes |
 
-Materials may be `public`, `authenticated`, or `private`, and only `published` material is discoverable to non-owners. Private material is limited to its owner and moderation roles. Public profile pages intentionally omit email, phone, roll number, and address.
+Resources may be `public`, `authenticated`, or `private`. Non-owners require active, `published`, `approved` resources; private resources are limited to owner and moderation roles. Deleted resources are denied even to owners/moderators. Public profile pages intentionally omit email, phone, roll number, and address. See the detailed ownership, supersession, standalone file/version deletion, and cleanup policies in the resource-model document.
 
 ## Security and operations
 
@@ -143,9 +147,10 @@ Materials may be `public`, `authenticated`, or `private`, and only `published` m
 - Sessions use strict mode, HttpOnly cookies, SameSite=Lax, HTTPS-aware Secure cookies, periodic ID rotation, login regeneration, and inactivity expiry.
 - Centralized CSRF validation protects login, registration, logout, uploads, deletion, favorites, and admin mutations.
 - Authorization is centralized by capability and repeated at the data boundary for downloads and deletion.
-- Uploads are limited by count and size, extension, PHP upload status, Fileinfo MIME/magic detection, and approved extension/MIME pairs. Storage keys are random and original names are response metadata only.
-- Downloads accept a positive material ID only. Opaque keys must match a strict pattern and resolve beneath private storage; traversal, absolute paths, separators, symlinks, and direct public access are rejected.
-- SQL uses prepared statements. Academic IDs and relationships, profile/contact data, semesters/years, material metadata, and JSON structures receive server-side canonical validation.
+- Uploads are limited by per-version file count, per-file and combined size, extension, PHP upload status, Fileinfo MIME/magic detection, and approved extension/MIME pairs. Every selected file commits as one resource version or all persistence is rolled back and stored objects are compensated.
+- Storage keys are server-generated random identities. Downloads accept only positive resource/file IDs, authorize the resource, resolve the key internally, and recheck persisted size/SHA-256. Traversal, paths, filenames, keys, symlinks, integrity mismatch, blocked scans, non-ready processing, and non-available storage states are rejected.
+- Deletion is logical, quarantine-first, and retryable. Nonterminal files persist an internal deterministic quarantine token, preserving an idempotent recovery path across crashes before/after database commit or between purge and status recording. Cleanup failures remain explicit; completed cleanup clears the token while retaining metadata/history.
+- SQL uses prepared statements. Academic IDs/relationships, profile/contact data, semesters/years, resource metadata, version descriptions, file metadata, and JSON structures receive server-side canonical validation.
 - HTML is escaped by default. Shared JavaScript uses `textContent` and DOM constructors rather than untrusted `innerHTML`.
 - User-facing errors are generic. Detailed exceptions are sent to the server error log only when safe to do so; `APP_DEBUG` never emits raw stack traces to clients.
 - Login throttling stores a keyed digest rather than a raw IP/email pair. Schedule periodic cleanup, for example: `DELETE FROM login_attempts WHERE attempted_at < UTC_TIMESTAMP() - INTERVAL 2 DAY;`.
@@ -169,4 +174,4 @@ php tests/integration.php
 bash tests/http_smoke.sh
 ```
 
-See `SECURITY.md` for reporting guidance and the deployment checklist. The application now has a P1.1 migration foundation, not a completed P1.2 redesign; operational backup/restore, mail-based account recovery, content moderation workflow, AI learning services, and normalized Resource/ResourceFile records remain outside this phase.
+See `SECURITY.md` for reporting guidance and the deployment checklist. P1.2 now provides normalized Resource/Version/File records and stable resource favorites. Production backup/restore rehearsal, mail-based account recovery, moderation/scanning workflows, full search, AI learning services, recommendations, notifications, and later-phase features remain outside this checkpoint.

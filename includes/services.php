@@ -1,17 +1,98 @@
 <?php
 declare(strict_types=1);
 
-function find_material(int $materialId): ?array
+function resource_repository(): EduShare\Modules\Resources\Infrastructure\MysqliResourceRepository
 {
-    $statement = db()->prepare(
-        'SELECT id, user_id, title, description, file_path, original_filename, mime_type, file_size,
-                checksum_sha256, university_id, department_id, course_id, subject_id, semester,
-                visibility, status, upload_date
-           FROM materials WHERE id = ? LIMIT 1'
+    static $repository = null;
+    if (!$repository instanceof EduShare\Modules\Resources\Infrastructure\MysqliResourceRepository) {
+        $repository = new EduShare\Modules\Resources\Infrastructure\MysqliResourceRepository(db());
+    }
+    return $repository;
+}
+
+function resource_storage(): EduShare\Modules\Resources\Infrastructure\PrivateResourceStorage
+{
+    static $storage = null;
+    if (!$storage instanceof EduShare\Modules\Resources\Infrastructure\PrivateResourceStorage) {
+        $storage = new EduShare\Modules\Resources\Infrastructure\PrivateResourceStorage();
+    }
+    return $storage;
+}
+
+function resource_access_policy(): EduShare\Modules\Resources\Domain\ResourceAccessPolicy
+{
+    static $policy = null;
+    if (!$policy instanceof EduShare\Modules\Resources\Domain\ResourceAccessPolicy) {
+        $policy = new EduShare\Modules\Resources\Domain\ResourceAccessPolicy();
+    }
+    return $policy;
+}
+
+function create_resource_service(): EduShare\Modules\Resources\Application\CreateResource
+{
+    $maxFiles = (int) app_config('upload.max_files');
+    return new EduShare\Modules\Resources\Application\CreateResource(
+        resource_repository(),
+        resource_storage(),
+        $maxFiles,
+        (int) app_config('upload.max_bytes') * $maxFiles
     );
-    $statement->bind_param('i', $materialId);
-    $statement->execute();
-    return $statement->get_result()->fetch_assoc() ?: null;
+}
+
+function add_resource_version_service(): EduShare\Modules\Resources\Application\AddResourceVersion
+{
+    $maxFiles = (int) app_config('upload.max_files');
+    return new EduShare\Modules\Resources\Application\AddResourceVersion(
+        resource_repository(),
+        resource_storage(),
+        resource_access_policy(),
+        $maxFiles,
+        (int) app_config('upload.max_bytes') * $maxFiles
+    );
+}
+
+function update_resource_service(): EduShare\Modules\Resources\Application\UpdateResource
+{
+    return new EduShare\Modules\Resources\Application\UpdateResource(
+        resource_repository(),
+        resource_access_policy()
+    );
+}
+
+function delete_resource_service(): EduShare\Modules\Resources\Application\DeleteResource
+{
+    return new EduShare\Modules\Resources\Application\DeleteResource(
+        resource_repository(),
+        resource_storage(),
+        resource_access_policy()
+    );
+}
+
+function find_resource(int $resourceId): ?array
+{
+    return resource_repository()->find($resourceId);
+}
+
+function find_resource_file(int $resourceId, ?int $fileId = null): ?array
+{
+    return resource_repository()->findFileForDownload($resourceId, $fileId);
+}
+
+function resource_versions_with_files(int $resourceId): array
+{
+    return resource_repository()->versionsWithFiles($resourceId);
+}
+
+/** @deprecated P1.2 callers should use find_resource(). */
+function find_material(int $resourceId): ?array
+{
+    $resource = find_resource($resourceId);
+    if ($resource !== null) {
+        $resource['user_id'] = $resource['owner_id'];
+        $resource['status'] = $resource['publication_status'] === 'published'
+            && $resource['moderation_status'] === 'approved' ? 'published' : 'pending';
+    }
+    return $resource;
 }
 
 function register_user(array $values): int
@@ -106,36 +187,46 @@ function authenticate_credentials(string $email, string $password): ?array
     return $user;
 }
 
-function toggle_material_favorite(int $userId, int $materialId): string
+function toggle_resource_favorite(int $userId, int $resourceId): string
 {
-    $material = find_material($materialId);
-    if ($material === null) {
-        abort_request(404, 'Material not found.');
-    }
-
     $user = auth_user();
-    if ($user === null || (int) $user['id'] !== $userId || !can_view_material($material, $user)) {
-        abort_request(403, 'You cannot favorite this material.');
+    if ($user === null || (int) $user['id'] !== $userId) {
+        abort_request(403, 'You cannot change this favorite.');
     }
 
     $connection = db();
     $connection->begin_transaction();
     try {
+        // Serialize against visibility/deletion changes so a new favorite cannot be
+        // attached using a stale pre-transaction view of the resource.
+        $resource = resource_repository()->find($resourceId, true);
+        if ($resource === null) {
+            abort_request(404, 'Resource not found.');
+        }
+
         $check = $connection->prepare(
-            'SELECT id FROM material_favorites WHERE user_id = ? AND material_id = ? FOR UPDATE'
+            'SELECT id FROM resource_favorites WHERE user_id = ? AND resource_id = ? FOR UPDATE'
         );
-        $check->bind_param('ii', $userId, $materialId);
+        $check->bind_param('ii', $userId, $resourceId);
         $check->execute();
         $favorite = $check->get_result()->fetch_assoc();
 
         if ($favorite !== null) {
-            $delete = $connection->prepare('DELETE FROM material_favorites WHERE user_id = ? AND material_id = ?');
-            $delete->bind_param('ii', $userId, $materialId);
+            // A user may always remove their own retained favorite, even after the
+            // resource becomes hidden or enters logical deletion.
+            $delete = $connection->prepare('DELETE FROM resource_favorites WHERE user_id = ? AND resource_id = ?');
+            $delete->bind_param('ii', $userId, $resourceId);
             $delete->execute();
             $action = 'removed';
         } else {
-            $insert = $connection->prepare('INSERT INTO material_favorites (user_id, material_id) VALUES (?, ?)');
-            $insert->bind_param('ii', $userId, $materialId);
+            if (($resource['deletion_status'] ?? 'deleted') !== 'active') {
+                abort_request(404, 'Resource not found.');
+            }
+            if (!can_view_resource($resource, $user)) {
+                abort_request(403, 'You cannot favorite this resource.');
+            }
+            $insert = $connection->prepare('INSERT INTO resource_favorites (user_id, resource_id) VALUES (?, ?)');
+            $insert->bind_param('ii', $userId, $resourceId);
             $insert->execute();
             $action = 'added';
         }
@@ -145,6 +236,12 @@ function toggle_material_favorite(int $userId, int $materialId): string
         $connection->rollback();
         throw $exception;
     }
+}
+
+/** @deprecated The accepted identifier is now a stable resource ID. */
+function toggle_material_favorite(int $userId, int $resourceId): string
+{
+    return toggle_resource_favorite($userId, $resourceId);
 }
 
 function toggle_university_favorite(int $userId, int $universityId): string

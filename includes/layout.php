@@ -106,7 +106,7 @@ function render_header(string $title, string $active = ''): void
                     <a href="<?= h(app_url($path)) ?>" class="<?= $active === $key ? 'text-blue-700 font-bold' : 'text-gray-700 hover:text-blue-600' ?>"><?= h($label) ?></a>
                 <?php endif; ?>
             <?php endforeach; ?>
-            <?php if ($user !== null && role_can($user['user_type'], 'upload_material')): ?>
+            <?php if ($user !== null && role_can($user['user_type'], 'upload_resource')): ?>
                 <a href="<?= h(app_url('upload.php')) ?>" class="<?= $active === 'upload' ? 'text-blue-700 font-bold' : 'text-gray-700 hover:text-blue-600' ?>">Upload</a>
             <?php endif; ?>
             <?php if ($user !== null && role_can($user['user_type'], 'manage_academics')): ?>

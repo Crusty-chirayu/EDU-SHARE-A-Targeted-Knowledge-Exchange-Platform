@@ -17,19 +17,29 @@ $profileStatement->bind_param('i', $userId);
 $profileStatement->execute();
 $profile = $profileStatement->get_result()->fetch_assoc();
 
-$materialsStatement = db()->prepare(
-    'SELECT m.id, m.title, m.description, m.upload_date, m.status, m.visibility,
-            c.name AS course_name, d.name AS department_name, s.name AS subject_name, uni.name AS university_name
-       FROM materials m
-       JOIN courses c ON c.id = m.course_id
-       JOIN departments d ON d.id = m.department_id
-       JOIN subjects s ON s.id = m.subject_id
-       JOIN universities uni ON uni.id = m.university_id
-      WHERE m.user_id = ? ORDER BY m.upload_date DESC'
+$resourcesStatement = db()->prepare(
+    'SELECT r.id, r.title, r.description, r.updated_at, r.publication_status,
+            r.moderation_status, r.visibility, r.current_version_number, r.deletion_status,
+            c.name AS course_name, d.name AS department_name,
+            s.name AS subject_name, uni.name AS university_name,
+            (SELECT COUNT(*) FROM resource_files file_count
+              JOIN resource_versions current_version ON current_version.id = file_count.resource_version_id
+             WHERE current_version.resource_id = r.id
+               AND current_version.version_number = r.current_version_number
+               AND file_count.storage_status = \'available\') AS file_count,
+            (SELECT COUNT(*) FROM resource_versions version_count
+              WHERE version_count.resource_id = r.id) AS version_count
+       FROM resources r
+       JOIN courses c ON c.id = r.course_id
+       JOIN departments d ON d.id = r.department_id
+       JOIN subjects s ON s.id = r.subject_id
+       JOIN universities uni ON uni.id = r.university_id
+      WHERE r.owner_id = ? AND r.deletion_status IN (\'active\', \'pending_cleanup\')
+      ORDER BY r.updated_at DESC'
 );
-$materialsStatement->bind_param('i', $userId);
-$materialsStatement->execute();
-$materials = $materialsStatement->get_result()->fetch_all(MYSQLI_ASSOC);
+$resourcesStatement->bind_param('i', $userId);
+$resourcesStatement->execute();
+$resources = $resourcesStatement->get_result()->fetch_all(MYSQLI_ASSOC);
 
 $universitiesStatement = db()->prepare(
     'SELECT u.id, u.name FROM university_favorites uf
@@ -44,7 +54,7 @@ render_header('Dashboard', 'dashboard');
 <main class="max-w-7xl mx-auto py-10 px-4">
     <div class="flex flex-wrap justify-between items-center gap-4 mb-8">
         <h1 class="text-4xl font-extrabold">My dashboard</h1>
-        <?php if (role_can($user['user_type'], 'upload_material')): ?><a href="<?= h(app_url('upload.php')) ?>" class="bg-blue-600 text-white font-semibold py-2 px-5 rounded-lg">Upload material</a><?php endif; ?>
+        <?php if (role_can($user['user_type'], 'upload_resource')): ?><a href="<?= h(app_url('upload.php')) ?>" class="bg-blue-600 text-white font-semibold py-2 px-5 rounded-lg">Create resource</a><?php endif; ?>
     </div>
 
     <section class="bg-white p-7 rounded-xl shadow mb-8">
@@ -60,20 +70,29 @@ render_header('Dashboard', 'dashboard');
 
     <div class="grid lg:grid-cols-3 gap-8">
         <section class="lg:col-span-2 bg-white p-7 rounded-xl shadow">
-            <h2 class="text-2xl font-bold mb-5">My uploaded materials</h2>
-            <?php if ($materials === []): ?><p class="text-gray-600">You have not uploaded any materials.</p><?php endif; ?>
+            <h2 class="text-2xl font-bold mb-5">My resources</h2>
+            <?php if ($resources === []): ?><p class="text-gray-600">You have not created any resources.</p><?php endif; ?>
             <div class="space-y-4">
-                <?php foreach ($materials as $material): ?>
+                <?php foreach ($resources as $resource): ?>
                     <article class="bg-gray-50 border p-5 rounded-lg">
-                        <div class="flex flex-wrap justify-between gap-3"><h3 class="font-bold text-lg"><?= h($material['title']) ?></h3><span class="text-xs uppercase bg-gray-200 px-2 py-1 rounded"><?= h($material['status']) ?> · <?= h($material['visibility']) ?></span></div>
-                        <p class="text-sm text-gray-600 my-2"><?= h($material['university_name']) ?> · <?= h($material['department_name']) ?> · <?= h($material['course_name']) ?> · <?= h($material['subject_name']) ?></p>
-                        <div class="flex flex-wrap gap-2 mt-3">
-                            <a target="_blank" rel="noopener" href="<?= h(app_url('download.php?id=' . (int) $material['id'])) ?>" class="bg-gray-200 px-3 py-2 rounded">View</a>
-                            <a href="<?= h(app_url('download.php?id=' . (int) $material['id'] . '&download=1')) ?>" class="bg-blue-600 text-white px-3 py-2 rounded">Download</a>
-                            <form method="post" action="<?= h(app_url('delete_material.php')) ?>">
-                                <?= csrf_field() ?><input type="hidden" name="id" value="<?= (int) $material['id'] ?>"><button class="bg-red-600 text-white px-3 py-2 rounded">Delete</button>
+                        <div class="flex flex-wrap justify-between gap-3"><h3 class="font-bold text-lg"><?= h($resource['title']) ?></h3><span class="text-xs uppercase bg-gray-200 px-2 py-1 rounded"><?php if ($resource['deletion_status'] === 'pending_cleanup'): ?>cleanup pending<?php else: ?><?= h($resource['publication_status'] . ' · ' . $resource['moderation_status']) ?> · <?= h($resource['visibility']) ?><?php endif; ?></span></div>
+                        <p class="text-sm text-gray-600 my-2"><?= h($resource['university_name']) ?> · <?= h($resource['department_name']) ?> · <?= h($resource['course_name']) ?> · <?= h($resource['subject_name']) ?></p>
+                        <?php if ($resource['deletion_status'] === 'pending_cleanup'): ?>
+                            <p class="text-sm text-amber-800">Access remains revoked. Retry the recorded private-object cleanup safely.</p>
+                            <form class="mt-3" method="post" action="<?= h(app_url('delete_material.php')) ?>">
+                                <?= csrf_field() ?><input type="hidden" name="id" value="<?= (int) $resource['id'] ?>"><button class="bg-amber-700 text-white px-3 py-2 rounded">Retry cleanup</button>
                             </form>
-                        </div>
+                        <?php else: ?>
+                            <p class="text-sm text-gray-600"><?= (int) $resource['file_count'] ?> current file(s) · Version <?= (int) $resource['current_version_number'] ?> of <?= (int) $resource['version_count'] ?></p>
+                            <div class="flex flex-wrap gap-2 mt-3">
+                                <a target="_blank" rel="noopener" href="<?= h(app_url('resource.php?id=' . (int) $resource['id'])) ?>" class="bg-gray-200 px-3 py-2 rounded">Open</a>
+                                <a href="<?= h(app_url('resource.php?id=' . (int) $resource['id'])) ?>" class="bg-blue-600 text-white px-3 py-2 rounded">Files & versions</a>
+                                <?php if (can_add_resource_version($resource, $user)): ?><a href="<?= h(app_url('upload.php?resource_id=' . (int) $resource['id'])) ?>" class="bg-green-700 text-white px-3 py-2 rounded">Add version</a><?php endif; ?>
+                                <form method="post" action="<?= h(app_url('delete_material.php')) ?>">
+                                    <?= csrf_field() ?><input type="hidden" name="id" value="<?= (int) $resource['id'] ?>"><button class="bg-red-600 text-white px-3 py-2 rounded">Delete resource</button>
+                                </form>
+                            </div>
+                        <?php endif; ?>
                     </article>
                 <?php endforeach; ?>
             </div>

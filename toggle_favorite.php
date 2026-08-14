@@ -9,14 +9,16 @@ if (!str_contains(strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? '')), 'applic
 }
 $data = request_data();
 require_csrf($data);
-$materialId = positive_int($data['material_id'] ?? null);
-if ($materialId === null) {
-    abort_request(422, 'A valid material ID is required.');
+// material_id remains a temporary transport alias for older clients; both values are stable resource IDs.
+$resourceId = positive_int($data['resource_id'] ?? ($data['material_id'] ?? null));
+if ($resourceId === null) {
+    abort_request(422, 'A valid resource ID is required.');
 }
 
-$action = toggle_material_favorite((int) $user['id'], $materialId);
+$action = toggle_resource_favorite((int) $user['id'], $resourceId);
 json_response([
     'status' => 'success',
     'action' => $action,
     'favorited' => $action === 'added',
+    'resource_id' => $resourceId,
 ]);

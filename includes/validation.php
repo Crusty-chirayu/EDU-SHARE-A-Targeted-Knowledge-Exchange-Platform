@@ -111,8 +111,8 @@ function validate_upload_metadata(array $input): array
     if ($values['title'] === '' || mb_strlen($values['title']) > 200 || preg_match('/[\x00-\x1F\x7F]/', $values['title'])) {
         $errors['title'] = 'Title is required and must be at most 200 characters.';
     }
-    if (mb_strlen($values['description']) > 2000 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $values['description'])) {
-        $errors['description'] = 'Description must be at most 2,000 characters.';
+    if (mb_strlen($values['description']) > 5000 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $values['description'])) {
+        $errors['description'] = 'Description must be at most 5,000 characters.';
     }
     foreach (['university_id', 'department_id', 'course_id', 'subject_id'] as $field) {
         if ($values[$field] === null) {

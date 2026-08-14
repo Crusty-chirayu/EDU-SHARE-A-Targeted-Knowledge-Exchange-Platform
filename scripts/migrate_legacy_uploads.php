@@ -8,6 +8,21 @@ if (PHP_SAPI !== 'cli') {
 
 require dirname(__DIR__) . '/includes/bootstrap.php';
 
+// This utility prepares P1.0/P1.1 material rows for the P1.2 data migration. Once
+// normalized tables exist, changing only materials would make the immutable resource
+// file metadata disagree with storage. Fail closed rather than creating that split.
+$normalizedModel = db()->prepare(
+    'SELECT COUNT(*) AS total
+       FROM information_schema.tables
+      WHERE table_schema = DATABASE() AND table_name = \'resources\''
+);
+$normalizedModel->execute();
+if ((int) $normalizedModel->get_result()->fetch_assoc()['total'] > 0) {
+    fwrite(STDERR, "The normalized resource model is already installed. This pre-P1.2 storage preparation utility will not modify legacy rows.\n");
+    fwrite(STDERR, "Review legacy_material_migrations and use normalized resource cleanup tooling for any remaining operator work.\n");
+    exit(2);
+}
+
 $sourceRoots = array_values(array_filter([
     realpath(APP_ROOT . '/uploads'),
     realpath(APP_ROOT . '/upload/uploads'),
@@ -107,7 +122,7 @@ while ($material = $result->fetch_assoc()) {
         );
         $statement->execute();
         $migrated++;
-        fwrite(STDOUT, "Material {$id}: copied to private storage as {$newKey}.\n");
+        fwrite(STDOUT, "Material {$id}: copied to private storage with an opaque object identity.\n");
     } catch (Throwable $exception) {
         @unlink($destination);
         fwrite(STDERR, "Material {$id}: database update failed; copied file was cleaned up.\n");

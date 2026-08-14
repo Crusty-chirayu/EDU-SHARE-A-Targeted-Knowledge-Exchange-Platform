@@ -1,8 +1,8 @@
 # ADR-001: incrementally modularize the existing PHP application
 
-- **Status:** Accepted for P1.1
+- **Status:** Accepted in P1.1; applied through P1.2
 - **Date:** 2026-08-13
-- **Decision scope:** Architecture foundation and first migration slice only
+- **Decision scope:** Architecture foundation and incremental migration approach
 
 ## Context observed in this repository
 
@@ -21,9 +21,12 @@ This is not an unstructured prototype in every respect. `includes/auth.php`,
 Replacing those controls all at once would create more risk than extracting them
 behind boundaries.
 
-The current `materials` row represents both one learning item and one physical file.
-Academic relationships include legacy ambiguity that requires operator resolution.
-Neither concern is guessed or normalized in P1.1.
+At the P1.1 decision point, each `materials` row represented both one learning item
+and one physical file. Academic relationships included legacy ambiguity that required
+operator resolution. P1.1 deliberately did not guess or normalize either concern.
+P1.2 subsequently applied this ADR's ports-and-adapters approach to a non-destructive
+Resource/Version/File migration; its rules are recorded in
+[`resource-model.md`](resource-model.md).
 
 ## Options considered
 
@@ -101,8 +104,22 @@ Use an incremental frameworkless modular monolith:
 - use the same MariaDB database during migration, while isolating query ownership in
   repositories;
 - retain all legacy entry points until route-by-route parity is demonstrated;
-- add only forward, checksummed, explicitly applied migrations. Do not alter the
-  material/file model in P1.1.
+- add only forward, checksummed, explicitly applied migrations. P1.1 did not alter
+  the material/file model.
+
+### P1.2 application of this decision
+
+P1.2 keeps the same runtime and security adapters while adding the bounded
+`Resources` domain/application/infrastructure layers. Active writes use logical
+resources, numbered retained versions, and opaque file records. The forward migration
+is additive and checksummed; legacy `materials`/`favorites` remain preserved as
+source/audit evidence, deterministic conversions are recorded, and ambiguous rows are
+sent to review without guessed academic relationships. Compatible root routes remain,
+but their contracts now use stable resource/file IDs and no raw storage paths.
+
+This is an application of ADR-001, not authorization for P1.3 search, AI,
+recommendations, moderation workflows, notifications, microservices, or a framework
+rewrite.
 
 ## Reuse, replacement, and temporary compatibility
 
@@ -117,9 +134,9 @@ exist.
 
 **Temporary adapters:** `LegacySessionUserProvider`, `LegacyAuthorizationGate`, and
 `ApplicationFactory` call Phase 0 global functions. Session key/role semantics,
-legacy URL/query/form contracts, the current schema, and the generated CSS remain
-compatibility requirements. These adapters can be replaced without changing module
-application services.
+explicitly retained legacy transport aliases, normalized-schema compatibility, and
+the generated CSS remain compatibility requirements. These adapters can be replaced
+without changing module application services.
 
 ## Consequences and guardrails
 

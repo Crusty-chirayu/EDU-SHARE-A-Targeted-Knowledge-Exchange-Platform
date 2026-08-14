@@ -60,10 +60,13 @@ function require_auth(bool $api = false): array
 function role_can(?string $role, string $ability): bool
 {
     $matrix = [
-        'upload_material' => ['teacher', 'moderator', 'admin'],
+        'upload_resource' => ['teacher', 'moderator', 'admin'],
+        'upload_material' => ['teacher', 'moderator', 'admin'], // legacy route ability alias
         'manage_academics' => ['admin'],
-        'moderate_materials' => ['moderator', 'admin'],
-        'delete_any_material' => ['moderator', 'admin'],
+        'moderate_resources' => ['moderator', 'admin'],
+        'moderate_materials' => ['moderator', 'admin'], // compatibility alias
+        'delete_any_resource' => ['moderator', 'admin'],
+        'delete_any_material' => ['moderator', 'admin'], // compatibility alias
     ];
 
     return $role !== null
@@ -80,31 +83,48 @@ function require_ability(string $ability, bool $api = false): array
     return $user;
 }
 
-function can_view_material(array $material, ?array $user): bool
+function can_view_resource(array $resource, ?array $user): bool
 {
-    $userId = $user === null ? null : (int) $user['id'];
-    if ($userId !== null && $userId === (int) $material['user_id']) {
-        return true;
-    }
-
-    $role = $user['user_type'] ?? null;
-    if (role_can($role, 'moderate_materials')) {
-        return true;
-    }
-
-    if (($material['status'] ?? 'published') !== 'published') {
-        return false;
-    }
-
-    return match ($material['visibility'] ?? 'authenticated') {
-        'public' => true,
-        'authenticated' => $user !== null,
-        default => false,
-    };
+    return resource_access_policy()->canView($resource, $user);
 }
 
+function can_delete_resource(array $resource, array $user): bool
+{
+    return resource_access_policy()->canDelete($resource, $user);
+}
+
+function can_add_resource_version(array $resource, array $user): bool
+{
+    return resource_access_policy()->canAddVersion($resource, $user);
+}
+
+function can_update_resource(array $resource, array $user): bool
+{
+    return resource_access_policy()->canUpdate($resource, $user);
+}
+
+/** @deprecated P1.2 authorization uses can_view_resource(). */
+function can_view_material(array $material, ?array $user): bool
+{
+    if (isset($material['owner_id'])) {
+        return can_view_resource($material, $user);
+    }
+    $resourceShape = $material;
+    $resourceShape['owner_id'] = $material['user_id'] ?? 0;
+    $resourceShape['publication_status'] = ($material['status'] ?? 'pending') === 'published'
+        ? 'published' : 'draft';
+    $resourceShape['moderation_status'] = ($material['status'] ?? 'pending') === 'published'
+        ? 'approved' : 'pending';
+    $resourceShape['deletion_status'] = 'active';
+    return can_view_resource($resourceShape, $user);
+}
+
+/** @deprecated P1.2 authorization uses can_delete_resource(). */
 function can_delete_material(array $material, array $user): bool
 {
-    return (int) $material['user_id'] === (int) $user['id']
-        || role_can($user['user_type'] ?? null, 'delete_any_material');
+    if (!isset($material['owner_id'])) {
+        $material['owner_id'] = $material['user_id'] ?? 0;
+        $material['deletion_status'] = 'active';
+    }
+    return can_delete_resource($material, $user);
 }

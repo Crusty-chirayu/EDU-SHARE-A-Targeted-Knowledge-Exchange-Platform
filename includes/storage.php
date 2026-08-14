@@ -23,10 +23,10 @@ function sanitize_original_filename(string $name): string
     if ($name === '') {
         return 'document';
     }
-    if (strlen($name) > 180) {
+    if (mb_strlen($name) > 180) {
         $extension = pathinfo($name, PATHINFO_EXTENSION);
-        $suffix = $extension === '' ? '' : '.' . substr($extension, 0, 10);
-        $name = substr($name, 0, 180 - strlen($suffix)) . $suffix;
+        $suffix = $extension === '' ? '' : '.' . mb_substr($extension, 0, 10);
+        $name = mb_substr($name, 0, 180 - mb_strlen($suffix)) . $suffix;
     }
     return $name;
 }
@@ -77,6 +77,11 @@ function validate_upload_candidate(
     if (!is_file($temporaryPath) || ($requireUploadedFile && !is_uploaded_file($temporaryPath))) {
         return [null, 'The uploaded file could not be verified.'];
     }
+    $actualSize = filesize($temporaryPath);
+    if ($actualSize === false || $actualSize !== $size || $actualSize < 1
+        || $actualSize > (int) app_config('upload.max_bytes')) {
+        return [null, 'The uploaded file size could not be verified.'];
+    }
 
     $cleanName = sanitize_original_filename($originalName);
     $extension = strtolower(pathinfo($cleanName, PATHINFO_EXTENSION));
@@ -92,12 +97,17 @@ function validate_upload_candidate(
         return [null, 'The file content does not match its extension.'];
     }
 
+    $checksum = hash_file('sha256', $temporaryPath);
+    if ($checksum === false) {
+        return [null, 'The uploaded file checksum could not be verified.'];
+    }
+
     return [[
         'original_name' => $cleanName,
         'extension' => $extension,
         'mime_type' => $detectedMime,
-        'size' => $size,
-        'checksum' => hash_file('sha256', $temporaryPath),
+        'size' => $actualSize,
+        'checksum' => $checksum,
     ], null];
 }
 
@@ -151,10 +161,15 @@ function new_storage_key(string $extension): string
     return bin2hex(random_bytes(16)) . '.' . $extension;
 }
 
-function safe_storage_path(string $storageKey, bool $mustExist = true): ?string
+function valid_storage_key(string $storageKey): bool
 {
     $extensions = implode('|', array_map('preg_quote', array_keys(allowed_upload_types())));
-    if (!preg_match('/^[a-f0-9]{32}\.(' . $extensions . ')$/D', $storageKey)) {
+    return preg_match('/^[a-f0-9]{32}\.(' . $extensions . ')$/D', $storageKey) === 1;
+}
+
+function safe_storage_path(string $storageKey, bool $mustExist = true): ?string
+{
+    if (!valid_storage_key($storageKey)) {
         return null;
     }
 
@@ -191,6 +206,133 @@ function store_uploaded_file(string $temporaryPath, string $storageKey): string
     }
     @chmod($destination, 0640);
     return $destination;
+}
+
+function private_storage_entry_is_absent(string $directory, string $identity): bool
+{
+    if ($identity === '' || basename($identity) !== $identity || str_contains($identity, "\0")) {
+        return false;
+    }
+    if (!file_exists($directory)) {
+        return !is_link($directory);
+    }
+    if (!is_dir($directory)) {
+        return false;
+    }
+    $root = realpath($directory);
+    if ($root === false) {
+        return false;
+    }
+    $candidate = $root . DIRECTORY_SEPARATOR . $identity;
+    return !file_exists($candidate) && !is_link($candidate);
+}
+
+function remove_storage_object(string $storageKey): bool
+{
+    if (!valid_storage_key($storageKey)) {
+        return false;
+    }
+    $path = safe_storage_path($storageKey);
+    if ($path !== null) {
+        return @unlink($path);
+    }
+
+    // A missing object is a successful idempotent cleanup. An unsafe surviving
+    // entry (for example a symlink) must never be reported as removed.
+    return private_storage_entry_is_absent(upload_storage_directory(), $storageKey);
+}
+
+function storage_quarantine_directory(): string
+{
+    return (string) app_config('storage_path') . '/quarantine';
+}
+
+function quarantine_token_for_storage_key(string $storageKey): ?string
+{
+    if (!valid_storage_key($storageKey)) {
+        return null;
+    }
+    return hash('sha256', "edu-share-resource-quarantine-v1\0" . $storageKey) . '.quarantine';
+}
+
+function quarantine_storage_object(string $storageKey): ?string
+{
+    $token = quarantine_token_for_storage_key($storageKey);
+    if ($token === null) {
+        throw new InvalidArgumentException('Invalid private storage object identity.');
+    }
+
+    $source = safe_storage_path($storageKey);
+    if ($source === null) {
+        if (!private_storage_entry_is_absent(upload_storage_directory(), $storageKey)) {
+            throw new RuntimeException('An unsafe private storage entry cannot be quarantined.');
+        }
+        // Idempotent recovery after a process dies between rename and database commit.
+        if (quarantined_storage_path($token) !== null) {
+            return $token;
+        }
+        if (!private_storage_entry_is_absent(storage_quarantine_directory(), $token)) {
+            throw new RuntimeException('An unsafe quarantine entry requires operator review.');
+        }
+        return null;
+    }
+
+    $directory = storage_quarantine_directory();
+    ensure_private_directory($directory);
+    $destination = $directory . DIRECTORY_SEPARATOR . $token;
+    if (file_exists($destination) || !rename($source, $destination)) {
+        throw new RuntimeException('Unable to quarantine a private storage object.');
+    }
+    @chmod($destination, 0640);
+    return $token;
+}
+
+function quarantined_storage_path(string $token): ?string
+{
+    if (preg_match('/^[a-f0-9]{64}\.quarantine$/D', $token) !== 1) {
+        return null;
+    }
+    $directory = storage_quarantine_directory();
+    if (!is_dir($directory)) {
+        return null;
+    }
+    $root = realpath($directory);
+    if ($root === false) {
+        return null;
+    }
+    $candidate = $root . DIRECTORY_SEPARATOR . $token;
+    $resolved = realpath($candidate);
+    if ($resolved === false
+        || !str_starts_with($resolved, $root . DIRECTORY_SEPARATOR)
+        || !is_file($resolved)
+        || is_link($candidate)) {
+        return null;
+    }
+    return $resolved;
+}
+
+function restore_quarantined_storage_object(string $token, string $storageKey): bool
+{
+    $source = quarantined_storage_path($token);
+    $destination = safe_storage_path($storageKey, false);
+    return $source !== null
+        && $destination !== null
+        && !file_exists($destination)
+        && rename($source, $destination);
+}
+
+function purge_quarantined_storage_object(string $token): bool
+{
+    if (preg_match('/^[a-f0-9]{64}\.quarantine$/D', $token) !== 1) {
+        return false;
+    }
+    $path = quarantined_storage_path($token);
+    if ($path !== null) {
+        return @unlink($path);
+    }
+
+    // Missing is an idempotent success; an unsafe surviving entry is not.
+    return private_storage_entry_is_absent(storage_quarantine_directory(), $token);
 }
 
 function format_bytes(int $bytes): string

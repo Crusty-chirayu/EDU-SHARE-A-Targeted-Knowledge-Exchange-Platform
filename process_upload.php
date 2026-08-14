@@ -3,7 +3,7 @@ declare(strict_types=1);
 require __DIR__ . '/includes/bootstrap.php';
 
 require_method('POST');
-$user = require_ability('upload_material');
+$user = require_ability('upload_resource');
 
 $maximumRequest = ((int) app_config('upload.max_files') * (int) app_config('upload.max_bytes')) + (1024 * 1024);
 if ((int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > $maximumRequest) {
@@ -11,38 +11,26 @@ if ((int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > $maximumRequest) {
 }
 require_csrf();
 
-[$metadata, $metadataErrors] = validate_upload_metadata($_POST);
-if ($metadataErrors !== []) {
-    flash('error', 'Upload validation failed: ' . implode(' ', array_values($metadataErrors)));
-    redirect('upload.php');
+$resourceId = positive_int($_POST['resource_id'] ?? null);
+if (array_key_exists('resource_id', $_POST) && $resourceId === null) {
+    abort_request(422, 'A valid resource ID is required when creating a version.');
 }
-
-if (!validate_academic_relationships($metadata)) {
-    flash('error', 'The selected university, department, course, subject, and semester do not form a valid academic path.');
-    redirect('upload.php');
-}
-
-if (!role_can($user['user_type'], 'moderate_materials')
-    && ((int) $user['university_id'] !== $metadata['university_id']
-        || (int) $user['department_id'] !== $metadata['department_id'])) {
-    abort_request(403, 'Contributors may only upload to their own university and department.');
-}
+$isNewVersion = $resourceId !== null;
+$redirectTarget = $isNewVersion ? 'upload.php?resource_id=' . $resourceId : 'upload.php';
 
 $files = normalize_uploaded_files($_FILES['files'] ?? []);
 if ($files === []) {
-    flash('error', 'Select at least one file to upload.');
-    redirect('upload.php');
+    flash('error', 'Select at least one file. No resource or version was created.');
+    redirect($redirectTarget);
 }
 if (count($files) > (int) app_config('upload.max_files')) {
-    flash('error', 'Choose no more than ' . (int) app_config('upload.max_files') . ' files per upload.');
-    redirect('upload.php');
+    flash('error', 'Choose no more than ' . (int) app_config('upload.max_files') . ' files per resource version.');
+    redirect($redirectTarget);
 }
 
-$successCount = 0;
-$failures = [];
-$uploadGroup = bin2hex(random_bytes(16));
+$verifiedFiles = [];
+$validationFailures = [];
 foreach ($files as $file) {
-    $displayName = sanitize_original_filename($file['name']);
     [$verified, $validationError] = validate_upload_candidate(
         $file['name'],
         $file['tmp_name'],
@@ -50,72 +38,86 @@ foreach ($files as $file) {
         $file['error']
     );
     if ($verified === null) {
-        $failures[] = $displayName . ': ' . $validationError;
+        $validationFailures[] = sanitize_original_filename($file['name']) . ': ' . $validationError;
         continue;
     }
+    $verifiedFiles[] = new EduShare\Modules\Resources\Application\VerifiedResourceFile(
+        $file['tmp_name'],
+        $verified['original_name'],
+        $verified['extension'],
+        $verified['mime_type'],
+        (int) $verified['size'],
+        (string) $verified['checksum']
+    );
+}
+if ($validationFailures !== []) {
+    flash('error', 'No files were saved because validation failed: ' . implode(' ', $validationFailures));
+    redirect($redirectTarget);
+}
 
-    $duplicate = db()->prepare('SELECT id FROM materials WHERE user_id = ? AND checksum_sha256 = ? LIMIT 1');
-    $duplicate->bind_param('is', $user['id'], $verified['checksum']);
-    $duplicate->execute();
-    if ($duplicate->get_result()->num_rows > 0) {
-        $failures[] = $displayName . ': this exact file has already been uploaded by your account.';
-        continue;
-    }
-
-    $storageKey = new_storage_key($verified['extension']);
-    $storedPath = null;
-    try {
-        $storedPath = store_uploaded_file($file['tmp_name'], $storageKey);
-        $visibility = 'authenticated';
-        $status = 'published';
-        $statement = db()->prepare(
-            'INSERT INTO materials
-             (user_id, title, description, type, file_path, original_filename, mime_type, file_size,
-              checksum_sha256, university_id, department_id, course_id, subject_id, semester,
-              upload_group_id, visibility, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+try {
+    if ($isNewVersion) {
+        $result = add_resource_version_service()->execute(
+            $resourceId,
+            $user,
+            $verifiedFiles,
+            canonical_text($_POST['change_description'] ?? '', true)
         );
-        $statement->bind_param(
-            'issssssisiiiiisss',
-            $user['id'],
+        flash('success', 'Version ' . $result->versionNumber . ' was created atomically with '
+            . count($result->fileIds) . ' file(s).');
+    } else {
+        [$metadata, $metadataErrors] = validate_upload_metadata($_POST);
+        if ($metadataErrors !== []) {
+            flash('error', 'Resource validation failed: ' . implode(' ', array_values($metadataErrors)));
+            redirect('upload.php');
+        }
+        if (!validate_academic_relationships($metadata)) {
+            flash('error', 'The selected university, department, course, subject, and semester do not form a valid academic path.');
+            redirect('upload.php');
+        }
+        if (!role_can($user['user_type'], 'moderate_resources')
+            && ((int) $user['university_id'] !== $metadata['university_id']
+                || (int) $user['department_id'] !== $metadata['department_id'])) {
+            abort_request(403, 'Contributors may only upload to their own university and department.');
+        }
+
+        $resourceMetadata = new EduShare\Modules\Resources\Application\ResourceMetadata(
             $metadata['title'],
-            $metadata['description'],
-            $verified['extension'],
-            $storageKey,
-            $verified['original_name'],
-            $verified['mime_type'],
-            $verified['size'],
-            $verified['checksum'],
+            $metadata['description'] === '' ? null : $metadata['description'],
             $metadata['university_id'],
             $metadata['department_id'],
             $metadata['course_id'],
             $metadata['subject_id'],
             $metadata['semester'],
-            $uploadGroup,
-            $visibility,
-            $status
+            'authenticated'
         );
-        $statement->execute();
-        $successCount++;
-    } catch (Throwable $exception) {
-        if ($storedPath !== null && is_file($storedPath)) {
-            @unlink($storedPath);
-        }
-        app_log('error', 'Upload persistence failed', [
-            'user_id' => $user['id'],
-            'type' => $exception::class,
-            'code' => $exception->getCode(),
-        ]);
-        $failures[] = $displayName . ': the server could not save this file.';
+        $result = create_resource_service()->execute((int) $user['id'], $resourceMetadata, $verifiedFiles);
+        flash('success', 'Resource created atomically with ' . count($result->fileIds) . ' file(s).');
     }
+    redirect('resource.php?id=' . $result->resourceId);
+} catch (EduShare\Modules\Resources\Application\ResourceNotFound $exception) {
+    abort_request(404, $exception->getMessage());
+} catch (EduShare\Modules\Resources\Application\ResourceAccessDenied $exception) {
+    abort_request(403, $exception->getMessage());
+} catch (EduShare\Modules\Resources\Application\DuplicateResourceFile|InvalidArgumentException $exception) {
+    flash('error', 'No files were saved: ' . $exception->getMessage());
+    redirect($redirectTarget);
+} catch (EduShare\Modules\Resources\Application\ResourceCleanupFailed $exception) {
+    app_log('critical', 'Resource persistence compensation requires administrator attention', [
+        'user_id' => $user['id'],
+        'resource_id' => $resourceId,
+        'cleanup_failure_count' => $exception->failedObjectCount,
+        'rollback_failed' => $exception->rollbackFailed,
+    ]);
+    flash('error', 'The resource operation could not be confirmed, and private storage cleanup requires administrator attention.');
+    redirect($redirectTarget);
+} catch (Throwable $exception) {
+    app_log('error', 'Atomic resource persistence failed', [
+        'user_id' => $user['id'],
+        'resource_id' => $resourceId,
+        'type' => $exception::class,
+        'code' => $exception->getCode(),
+    ]);
+    flash('error', 'No files were saved because the resource operation could not be completed.');
+    redirect($redirectTarget);
 }
-
-if ($successCount > 0 && $failures === []) {
-    flash('success', "Successfully uploaded {$successCount} file(s).");
-} elseif ($successCount > 0) {
-    flash('success', "Uploaded {$successCount} file(s). " . count($failures) . ' file(s) failed.');
-    flash('error', implode(' ', $failures));
-} else {
-    flash('error', 'No files were uploaded. ' . implode(' ', $failures));
-}
-redirect('upload.php');

@@ -11,10 +11,10 @@ exception must remain documented until a forward migration resolves it.
 |---|---|---|---|
 | **Identity & Access** | Credentials, authenticated identity, session lifecycle, roles/capabilities, login throttling, CSRF identity binding | `login1.php`, `register.php`, `logout.php`, `includes/auth.php`, `session.php`, `csrf.php`; identity columns in `users`, `login_attempts` | Shared HTTP/config/persistence; publishes an identity/authorization port, not session internals |
 | **Academic Taxonomy** | Universities, departments, courses, subjects, semesters and validated relationships; never guesses ambiguous lineage | `admin.php`, `get_universities.php`, `get_departments.php`, `get_courses.php`, `get_subjects.php`; taxonomy tables | Identity authorization for writes; no Resources dependency |
-| **Resources** | Learning-resource metadata, ownership, visibility/status policy and lifecycle | `homepage.php`, material areas of `dashboard.php`, `process_upload.php`, `download.php`, `delete_material.php`; current `materials` table | Identity, taxonomy references, File Ingestion port; P1.2 may separate Resource from ResourceFile |
-| **File Ingestion** | Upload acceptance, MIME/magic/size verification, checksum, opaque storage key, private binary storage and authorized stream handoff | `upload.php`, file-processing portions of `process_upload.php`, `includes/storage.php`, `storage/` deny rules | Identity/Resources use-case ports; never trusts a client path or filename |
+| **Resources** | Stable learning-resource identity/metadata, immutable numbered versions, ownership, visibility/status, favorites integration, and retryable logical deletion/cleanup lifecycle | `app/Modules/Resources/`, `resource.php`, `homepage.php`, resource areas of `dashboard.php`, `process_upload.php`, `update_resource.php`, `download.php`, `delete_material.php`; `resources`, `resource_versions`, `resource_files` | Identity and validated taxonomy references; File Ingestion only through `ResourceStorage`; normalized writes never use legacy `materials` |
+| **File Ingestion** | Upload acceptance, MIME/magic/size verification, SHA-256, opaque storage identity, private binary storage, quarantine/restore/purge, and authorized stream handoff | `upload.php`, validation portions of `process_upload.php`, `includes/storage.php`, `PrivateResourceStorage`, private storage deny rules | Called through Resources use-case ports; never trusts a client path or filename and never exposes an opaque key |
 | **Search & Discovery** | Search/filter/query read models and visibility-aware discovery | `homepage.php`, `lib.php`, selector-assisted browsing | Read ports/projections from Resources, Taxonomy, Profiles; does not own source records |
-| **Collections** | User material favorites and university favorites | `favorites.php`, `toggle_favorite.php`, `toggle_university_favorite.php`; favorite tables | Identity plus authorized Resource/Taxonomy existence ports |
+| **Collections** | Stable resource favorites and university favorites | `favorites.php`, `toggle_favorite.php`, `toggle_university_favorite.php`; `resource_favorites`, `university_favorites` | Identity plus authorized Resource/Taxonomy existence ports; a favorite never binds to a version/file |
 | **Profiles** | Privacy-minimized public contributor identity and academic affiliation read models | `teacher_profile.php`, `university_teachers.php`, new `app/Modules/Profiles/`; non-credential `users` fields | Identity public user ID/role and Taxonomy references; must not expose contact/auth fields |
 | **Moderation** | Review decisions, policy actions, audit reason/status transitions | Current moderator/admin material capabilities and `materials.status`; no workflow yet | Identity authorization and Resources command ports |
 | **Notifications** | User notification preferences, delivery requests/status and templates | No implementation yet | Receives events from application services; cannot own source-module transactions |
@@ -35,7 +35,10 @@ app/Modules/<Module>/
 
 The first slice under `app/Modules/Profiles/` demonstrates an application repository
 port, use-case service, strict route input, controller, and `mysqli` adapter. Identity
-middleware is supplied by `app/Modules/IdentityAccess/`.
+middleware is supplied by `app/Modules/IdentityAccess/`. P1.2's
+`app/Modules/Resources/` applies the same inward dependency rule to create,
+add-version, metadata-update, retrieval, and deletion services. See
+[`resource-model.md`](resource-model.md) for its relationships and lifecycle policies.
 
 ## Dependency rules
 

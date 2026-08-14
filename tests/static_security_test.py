@@ -44,6 +44,7 @@ class StaticSecurityTests(unittest.TestCase):
             "logout.php",
             "process_upload.php",
             "delete_material.php",
+            "update_resource.php",
             "toggle_favorite.php",
             "toggle_university_favorite.php",
         ]
@@ -67,8 +68,10 @@ class StaticSecurityTests(unittest.TestCase):
 
     def test_role_matrix_is_centralized_and_fail_closed(self) -> None:
         source = read("includes/auth.php")
+        self.assertIn("'upload_resource' => ['teacher', 'moderator', 'admin']", source)
         self.assertIn("'upload_material' => ['teacher', 'moderator', 'admin']", source)
         self.assertIn("'manage_academics' => ['admin']", source)
+        self.assertIn("'delete_any_resource' => ['moderator', 'admin']", source)
         self.assertIn("'delete_any_material' => ['moderator', 'admin']", source)
         self.assertIn("isset($matrix[$ability])", source)
         self.assertIn("require_ability('manage_academics')", read("admin.php"))
@@ -76,31 +79,60 @@ class StaticSecurityTests(unittest.TestCase):
     def test_download_is_id_based_and_storage_is_not_client_controlled(self) -> None:
         source = read("download.php")
         self.assertIn("positive_int($_GET['id']", source)
-        self.assertIn("can_view_material", source)
-        self.assertIn("safe_storage_path", source)
-        self.assertNotRegex(source, r"\$_(?:GET|POST|REQUEST)\[['\"](?:path|file|filename|file_path)")
+        self.assertIn("positive_int($_GET['file_id']", source)
+        self.assertIn("find_resource_file($resourceId, $fileId)", source)
+        self.assertIn("can_view_resource", source)
+        self.assertIn("resource_storage()->openReadStream", source)
+        self.assertIn("hash_update_stream", source)
+        self.assertNotIn("safe_storage_path", source)
+        private_adapter = read("app/Modules/Resources/Infrastructure/PrivateResourceStorage.php")
+        self.assertIn("safe_storage_path", private_adapter)
+        self.assertNotRegex(
+            source,
+            r"\$_(?:GET|POST|REQUEST)\[['\"](?:path|file|filename|file_path|storage_key)['\"]\]",
+        )
+        detail = read("resource.php")
+        self.assertIn("download.php?id=", detail)
+        self.assertNotIn("storage_key", detail)
         storage = read("includes/storage.php")
         self.assertIn("/^[a-f0-9]{32}", storage)
         self.assertIn("realpath", storage)
         self.assertIn("is_link", storage)
         self.assertIn("random_bytes(16)", storage)
 
-    def test_upload_has_layered_validation_and_cleanup(self) -> None:
+    def test_upload_has_layered_validation_atomicity_and_cleanup(self) -> None:
         storage = read("includes/storage.php")
         handler = read("process_upload.php")
-        for marker in ("UPLOAD_ERR_OK", "finfo", "upload_magic_matches", "is_uploaded_file", "hash_file('sha256'", "move_uploaded_file"):
+        for marker in ("UPLOAD_ERR_OK", "finfo", "upload_magic_matches", "is_uploaded_file", "filesize", "hash_file('sha256'", "move_uploaded_file"):
             self.assertIn(marker, storage)
         self.assertIn("app_config('upload.max_files')", handler)
         self.assertIn("app_config('upload.max_bytes')", handler)
         self.assertIn("validate_academic_relationships", handler)
-        self.assertIn("@unlink($storedPath)", handler)
+        self.assertIn("create_resource_service()->execute", handler)
+        self.assertIn("add_resource_version_service()->execute", handler)
         self.assertNotIn("$_POST['branch_for']", handler)
+        for service_path in (
+            "app/Modules/Resources/Application/CreateResource.php",
+            "app/Modules/Resources/Application/AddResourceVersion.php",
+        ):
+            service = read(service_path)
+            self.assertIn("$this->repository->begin()", service)
+            self.assertIn("$this->repository->rollback()", service)
+            self.assertIn("if (!$this->storage->remove($storageKey))", service)
+            self.assertIn("throw new ResourceCleanupFailed", service)
+            self.assertLess(
+                service.index("$storedKeys[] = $storageKey"),
+                service.index("$this->storage->putVerifiedUpload"),
+            )
+        self.assertIn("catch (EduShare\\Modules\\Resources\\Application\\ResourceCleanupFailed", handler)
+        self.assertIn("cleanup_failure_count", handler)
 
     def test_favorite_apis_share_json_post_contract(self) -> None:
-        for route, id_field in (
-            ("toggle_favorite.php", "material_id"),
+        contracts = (
+            ("toggle_favorite.php", "resource_id"),
             ("toggle_university_favorite.php", "university_id"),
-        ):
+        )
+        for route, id_field in contracts:
             source = read(route)
             self.assertIn("require_method('POST')", source)
             self.assertIn("application/json", source)
@@ -108,6 +140,7 @@ class StaticSecurityTests(unittest.TestCase):
             self.assertIn("require_csrf($data)", source)
             self.assertIn(f"$data['{id_field}']", source)
             self.assertIn("json_response", source)
+        self.assertIn("$data['material_id']", read("toggle_favorite.php"))
 
     def test_no_unsafe_dom_html_sinks_or_inline_event_handlers(self) -> None:
         javascript = read("assets/app.js")
@@ -159,13 +192,25 @@ class StaticSecurityTests(unittest.TestCase):
         nginx = read("deploy/nginx.conf.example")
         self.assertIn("location ~ ^/(?:app|routes|views|includes|database|scripts|storage|tests|deploy)", nginx)
 
-    def test_database_artifacts_are_sanitized_and_separated(self) -> None:
+    def test_database_artifacts_are_sanitized_normalized_and_separated(self) -> None:
         self.assertFalse((ROOT / "project.sql").exists())
         schema = read("database/schema.sql")
         fixture = read("database/seed_demo.sql")
         self.assertIn("CREATE TABLE users", schema)
         self.assertIn("branch_for", schema)
         self.assertIn("subjects_semester_check", schema)
+        for table in ("resources", "resource_versions", "resource_files", "resource_favorites"):
+            self.assertIn(f"CREATE TABLE {table}", schema)
+        self.assertIn("UNIQUE KEY resource_versions_resource_number_unique (resource_id, version_number)", schema)
+        self.assertIn("checksum_sha256 CHAR(64)", schema)
+        self.assertIn("storage_key VARCHAR(80)", schema)
+        self.assertIn("quarantine_token VARCHAR(80)", schema)
+        self.assertIn("resource_files_quarantine_token_unique", schema)
+        self.assertIn("ON DELETE RESTRICT", schema)
+        self.assertIn(
+            "legacy_favorite_migrations_resource_favorite_fk FOREIGN KEY (resource_favorite_id) REFERENCES resource_favorites (id) ON DELETE SET NULL",
+            schema,
+        )
         self.assertNotIn("INSERT INTO users", schema)
         fixture_statements = "\n".join(
             line for line in fixture.splitlines() if not line.lstrip().startswith("--")
@@ -183,6 +228,62 @@ class StaticSecurityTests(unittest.TestCase):
         self.assertNotRegex(combined, r"(?i)\$[A-Za-z_]*(?:password|passwd|pwd)[A-Za-z_]*\s*=\s*['\"][^'\"]{6,}['\"]")
         self.assertNotRegex(combined, r"(?:href|src)=[\"'][^\"']*uploads/")
         self.assertNotIn("project.sql", combined)
+
+    def test_normalized_resource_pages_do_not_query_legacy_material_storage(self) -> None:
+        active_resource_files = (
+            "homepage.php", "dashboard.php", "favorites.php", "teacher_profile.php",
+            "resource.php", "process_upload.php", "download.php", "delete_material.php",
+            "toggle_favorite.php", "update_resource.php",
+        )
+        for path in active_resource_files:
+            source = read(path)
+            self.assertNotRegex(source, r"(?i)\b(?:FROM|INTO|UPDATE|JOIN)\s+materials\b", path)
+            self.assertNotRegex(source, r"(?i)\b(?:FROM|INTO|UPDATE|JOIN)\s+material_favorites\b", path)
+        for path in ("homepage.php", "dashboard.php", "favorites.php", "teacher_profile.php"):
+            source = read(path)
+            self.assertIn("resources r", source)
+            self.assertIn("file_count", source)
+            self.assertIn("resource.php?id=", source)
+
+    def test_resource_application_layer_uses_ports_and_explicit_lifecycle(self) -> None:
+        application_paths = (
+            "app/Modules/Resources/Application/CreateResource.php",
+            "app/Modules/Resources/Application/AddResourceVersion.php",
+            "app/Modules/Resources/Application/UpdateResource.php",
+            "app/Modules/Resources/Application/DeleteResource.php",
+        )
+        for path in application_paths:
+            source = read(path)
+            self.assertNotIn("mysqli", source, path)
+            self.assertNotIn("$_GET", source, path)
+            self.assertNotIn("$_POST", source, path)
+        delete = read("app/Modules/Resources/Application/DeleteResource.php")
+        for state in ("available", "cleanup_pending", "missing", "deleted"):
+            self.assertIn(state, delete)
+        self.assertIn("canRecoverDeletion", delete)
+        self.assertIn("setFileQuarantine", delete)
+        storage = read("includes/storage.php")
+        self.assertIn("quarantine_token_for_storage_key", storage)
+        self.assertIn("edu-share-resource-quarantine-v1", storage)
+        self.assertIn("private_storage_entry_is_absent", storage)
+        self.assertIn("if (quarantined_storage_path($token) !== null)", storage)
+        self.assertIn("unsafe quarantine entry requires operator review", storage)
+        policy = read("app/Modules/Resources/Domain/ResourceAccessPolicy.php")
+        self.assertIn("deletion_status", policy)
+        self.assertIn("publication_status", policy)
+        self.assertIn("moderation_status", policy)
+        self.assertIn("visibility", policy)
+        create = read("app/Modules/Resources/Application/CreateResource.php")
+        add_version = read("app/Modules/Resources/Application/AddResourceVersion.php")
+        for operation in (create, add_version):
+            self.assertIn("->lockOwner(", operation)
+            self.assertLess(operation.index("->lockOwner("), operation.index("->assertFileSet("))
+        repository = read("app/Modules/Resources/Infrastructure/MysqliResourceRepository.php")
+        self.assertIn("SELECT id FROM users WHERE id = ? FOR UPDATE", repository)
+        self.assertIn("$sql .= ' AND r.id <> ?'", repository)
+        self.assertIn("if ($fileId !== null)", repository)
+        self.assertIn("$sql .= ' AND rf.id = ?'", repository)
+        self.assertNotIn("rf.storage_status = \\'available\\';", repository)
 
     def test_modular_route_preserves_auth_validation_and_data_boundaries(self) -> None:
         front_controller = read("app.php")
@@ -211,8 +312,43 @@ class StaticSecurityTests(unittest.TestCase):
         self.assertIn("(?:DROP|TRUNCATE)", runner)
         self.assertIn("DELETE\\s+FROM", runner)
         self.assertNotIn("002_p0_finalize.sql", read("scripts/migrate.php"))
-        migration_files = list((ROOT / "database/migrations/forward").glob("*.sql"))
-        self.assertEqual([], migration_files)
+        migration_files = sorted((ROOT / "database/migrations/forward").glob("*.sql"))
+        self.assertEqual(["20260813120000_normalize_resources.sql"], [path.name for path in migration_files])
+        for path in migration_files:
+            self.assertRegex(path.name, r"^\d{14}_[a-z0-9_]+\.sql$")
+            sql = path.read_text(encoding="utf-8")
+            statements = re.sub(r"/\*.*?\*/|--[^\r\n]*", "", sql, flags=re.DOTALL)
+            self.assertNotRegex(statements, r"(?i)\b(?:DROP|TRUNCATE)\b|\bDELETE\s+FROM\b")
+
+    def test_resource_migration_is_non_destructive_and_audits_ambiguity(self) -> None:
+        migration = read("database/migrations/forward/20260813120000_normalize_resources.sql")
+        for table in (
+            "resources", "resource_versions", "resource_files", "resource_favorites",
+            "legacy_material_migrations", "legacy_favorite_migrations",
+        ):
+            self.assertIn(f"CREATE TABLE IF NOT EXISTS {table}", migration)
+        self.assertIn("upload_group_ambiguous", migration)
+        self.assertIn("academic_relationship_invalid", migration)
+        self.assertIn("storage_metadata_invalid", migration)
+        self.assertIn("storage_identity_ambiguous", migration)
+        self.assertIn("upload_group_duplicate_content", migration)
+        self.assertIn("resource_identity_conflict", migration)
+        self.assertIn("resource_version_identity_conflict", migration)
+        self.assertIn("resource_file_identity_conflict", migration)
+        self.assertIn("existing_version.created_at <=> expected_resource.created_at", migration)
+        self.assertIn("JOIN resource_versions unexpected_version", migration)
+        self.assertIn("existing_file.created_at <=> source_file.upload_date", migration)
+        self.assertIn("JOIN resource_files existing_version_file", migration)
+        self.assertIn("expected_file_map.material_id IS NULL", migration)
+        self.assertIn("JOIN resources existing ON existing.id = lm.proposed_resource_id", migration)
+        self.assertIn("content_member.upload_group_id = m.upload_group_id", migration)
+        self.assertIn("same_content.upload_group_id = content_member.upload_group_id", migration)
+        self.assertIn("storage_member.upload_group_id, CONCAT('material:'", migration)
+        self.assertIn("review_required", migration)
+        self.assertIn("INSERT IGNORE INTO resource_favorites", migration)
+        self.assertIn("ON DUPLICATE KEY UPDATE\n    resource_favorite_id = VALUES(resource_favorite_id)", migration)
+        self.assertNotRegex(migration, r"(?i)\b(?:DROP|TRUNCATE)\s+(?:TABLE\s+)?materials\b")
+        self.assertNotRegex(migration, r"(?i)\bDELETE\s+FROM\s+(?:materials|material_favorites)\b")
 
     def test_shared_view_foundations_escape_content_and_protect_post_forms(self) -> None:
         layout = read("includes/layout.php")

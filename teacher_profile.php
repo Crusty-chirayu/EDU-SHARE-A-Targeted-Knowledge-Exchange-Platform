@@ -24,29 +24,37 @@ if ($profile === null) {
     abort_request(404, 'Profile not found.');
 }
 
-$materialsStatement = db()->prepare(
-    'SELECT m.id, m.user_id, m.title, m.description, m.upload_date, m.visibility, m.status,
-            c.name AS course_name, d.name AS department_name, s.name AS subject_name
-       FROM materials m
-       JOIN courses c ON c.id = m.course_id
-       JOIN departments d ON d.id = m.department_id
-       JOIN subjects s ON s.id = m.subject_id
-      WHERE m.user_id = ? ORDER BY m.upload_date DESC'
+$resourcesStatement = db()->prepare(
+    'SELECT r.id, r.owner_id, r.title, r.description, r.updated_at, r.visibility,
+            r.publication_status, r.moderation_status, r.deletion_status, r.current_version_number,
+            c.name AS course_name, d.name AS department_name, s.name AS subject_name,
+            (SELECT COUNT(*) FROM resource_files file_count
+              JOIN resource_versions current_version ON current_version.id = file_count.resource_version_id
+             WHERE current_version.resource_id = r.id
+               AND current_version.version_number = r.current_version_number
+               AND file_count.storage_status = \'available\') AS file_count,
+            (SELECT COUNT(*) FROM resource_versions version_count
+              WHERE version_count.resource_id = r.id) AS version_count
+       FROM resources r
+       JOIN courses c ON c.id = r.course_id
+       JOIN departments d ON d.id = r.department_id
+       JOIN subjects s ON s.id = r.subject_id
+      WHERE r.owner_id = ? ORDER BY r.updated_at DESC'
 );
-$materialsStatement->bind_param('i', $profileId);
-$materialsStatement->execute();
-$materials = array_values(array_filter(
-    $materialsStatement->get_result()->fetch_all(MYSQLI_ASSOC),
-    static fn (array $material): bool => can_view_material($material, $viewer)
+$resourcesStatement->bind_param('i', $profileId);
+$resourcesStatement->execute();
+$resources = array_values(array_filter(
+    $resourcesStatement->get_result()->fetch_all(MYSQLI_ASSOC),
+    static fn (array $resource): bool => can_view_resource($resource, $viewer)
 ));
 
 $favoriteIds = [];
 if ($viewer !== null) {
-    $favoriteStatement = db()->prepare('SELECT material_id FROM material_favorites WHERE user_id = ?');
+    $favoriteStatement = db()->prepare('SELECT resource_id FROM resource_favorites WHERE user_id = ?');
     $favoriteStatement->bind_param('i', $viewer['id']);
     $favoriteStatement->execute();
     foreach ($favoriteStatement->get_result()->fetch_all(MYSQLI_ASSOC) as $favorite) {
-        $favoriteIds[(int) $favorite['material_id']] = true;
+        $favoriteIds[(int) $favorite['resource_id']] = true;
     }
 }
 
@@ -63,16 +71,16 @@ render_header($profile['full_name'] . ' profile');
     </section>
 
     <section class="bg-white p-8 rounded-xl shadow">
-        <h2 class="text-2xl font-bold mb-3">Uploaded materials</h2>
+        <h2 class="text-2xl font-bold mb-3">Resources</h2>
         <p class="status-message mb-4" data-status-message role="status"></p>
-        <?php if ($materials === []): ?><p class="text-gray-600">No materials are available from this profile.</p><?php endif; ?>
+        <?php if ($resources === []): ?><p class="text-gray-600">No resources are available from this profile.</p><?php endif; ?>
         <div class="space-y-4">
-            <?php foreach ($materials as $material): $favorited = isset($favoriteIds[(int) $material['id']]); ?>
-                <article data-material-card class="bg-gray-50 border p-5 rounded-lg">
-                    <div class="flex flex-wrap justify-between gap-3"><h3 class="text-lg font-bold"><?= h($material['title']) ?></h3><?php if ($viewer !== null && (int) $viewer['id'] !== $profileId): ?><button type="button" data-favorite-material="<?= (int) $material['id'] ?>" data-endpoint="<?= h(app_url('toggle_favorite.php')) ?>" aria-pressed="<?= $favorited ? 'true' : 'false' ?>" class="text-red-700"><?= $favorited ? '♥ Favorited' : '♡ Favorite' ?></button><?php endif; ?></div>
-                    <p class="text-gray-700 my-2 whitespace-pre-line"><?= h($material['description']) ?></p>
-                    <p class="text-sm text-gray-600"><?= h($material['department_name']) ?> · <?= h($material['course_name']) ?> · <?= h($material['subject_name']) ?></p>
-                    <div class="flex gap-3 mt-4"><a target="_blank" rel="noopener" href="<?= h(app_url('download.php?id=' . (int) $material['id'])) ?>" class="bg-gray-200 px-4 py-2 rounded">View</a><a href="<?= h(app_url('download.php?id=' . (int) $material['id'] . '&download=1')) ?>" class="bg-blue-600 text-white px-4 py-2 rounded">Download</a></div>
+            <?php foreach ($resources as $resource): $favorited = isset($favoriteIds[(int) $resource['id']]); ?>
+                <article data-resource-card class="bg-gray-50 border p-5 rounded-lg">
+                    <div class="flex flex-wrap justify-between gap-3"><h3 class="text-lg font-bold"><?= h($resource['title']) ?></h3><?php if ($viewer !== null && (int) $viewer['id'] !== $profileId): ?><button type="button" data-favorite-resource="<?= (int) $resource['id'] ?>" data-endpoint="<?= h(app_url('toggle_favorite.php')) ?>" aria-pressed="<?= $favorited ? 'true' : 'false' ?>" class="text-red-700"><?= $favorited ? '♥ Favorited' : '♡ Favorite' ?></button><?php endif; ?></div>
+                    <p class="text-gray-700 my-2 whitespace-pre-line"><?= h($resource['description']) ?></p>
+                    <p class="text-sm text-gray-600"><?= h($resource['department_name']) ?> · <?= h($resource['course_name']) ?> · <?= h($resource['subject_name']) ?> · <?= (int) $resource['file_count'] ?> current file(s) · <?= (int) $resource['version_count'] ?> version(s)</p>
+                    <div class="flex gap-3 mt-4"><a target="_blank" rel="noopener" href="<?= h(app_url('resource.php?id=' . (int) $resource['id'])) ?>" class="bg-gray-200 px-4 py-2 rounded">Open resource</a><a href="<?= h(app_url('resource.php?id=' . (int) $resource['id'])) ?>" class="bg-blue-600 text-white px-4 py-2 rounded">Files & versions</a></div>
                 </article>
             <?php endforeach; ?>
         </div>
