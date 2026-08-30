@@ -138,7 +138,7 @@ pie showData
     "Planned" : 25
 ```
 
-### ✅ Shipped (built by [Rishav](https://github.com/rishav-84ya))
+### ✅ Shipped 
 - [x] Auth: register, login, logout, sessions
 - [x] Upload / download / delete flow for materials
 - [x] University → Department → Course → Subject filter chain
